@@ -15,7 +15,23 @@
   gap:            0.35rem;
   flex:           1;
   min-width:      160px;
-  max-width:      280px;
+  max-width:      320px;
+}
+
+/* iOS Safari date input fix */
+.inv-date-picker input[type="date"],
+.inv-date-picker select {
+  -webkit-appearance: none;
+  appearance:         none;
+  width:              100%;
+  min-width:          0;
+}
+
+@media (max-width: 600px) {
+  .inv-date-picker {
+    min-width: 100%;
+    max-width: 100%;
+  }
 }
 
 /* ── Template list ────────────────────────────────────────────────────────── */

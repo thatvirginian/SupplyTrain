@@ -392,6 +392,9 @@ tbody td {
   outline:       none;
   transition:    border-color 0.15s;
   width:         100%;
+  min-width:     0;           /* prevent iOS date input overflow */
+  -webkit-appearance: none;   /* normalize date/select on iOS */
+  appearance:    none;
 }
 
 .input:focus {
