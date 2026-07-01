@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+
+# Node / frontend dev
+frontend/node_modules/
+frontend/.vite/
+
+# Old backup folders
+old/
+old_06012026/
+app_2.py
+app_3.py
+app_o.py
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+Dockerfile
+.dockerignore
