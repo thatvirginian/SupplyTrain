@@ -7,30 +7,36 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Palette */
-  --bg-base:        #0f1117;
-  --bg-surface:     #1a1d27;
-  --bg-raised:      #22263a;
-  --bg-hover:       #2a2f47;
+  /* Backgrounds */
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-raised: #f1f5f9;
+  --bg-hover: #e2e8f0;
 
-  --border:         #2e3354;
-  --border-light:   #3d4566;
+  /* Borders */
+  --border: #cbd5e1;
+  --border-light: #e2e8f0;
 
-  --text-primary:   #e2e8f0;
-  --text-secondary: #8892aa;
-  --text-muted:     #545e7a;
+  /* Typography */
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
 
-  --accent:         #ffff00;   /* Anita's red */
-  --accent-soft:    rgba(232, 71, 42, 0.15);
-  --accent-hover:   #ff5538;
+  /* Accents */
+  --accent: #ed1c24; /* Anita's Yellow (Adjusted for contrast) */
+  --accent-y: #fff200; /* Anita's Yellow (Adjusted for contrast) */
+  --accent-soft: rgba(232, 71, 42, 0.08);
+  --accent-hover: #e6391d;
 
-  --success:        #22c55e;
-  --warning:        #f59e0b;
-  --error:          #ef4444;
-  --info:           #3b82f6;
+  /* Status Signals */
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+  --info: #2563eb;
 
   /* Sidebar */
-  --sidebar-width:  220px;
+  --sidebar-width:     220px;
+  --sidebar-collapsed: 52px;
 
   /* Typography */
   --font-body:      system-ui, -apple-system, sans-serif;
@@ -62,16 +68,74 @@ body {
 .sidebar {
   width:           var(--sidebar-width);
   min-width:       var(--sidebar-width);
-  background:      var(--bg-surface);
+  background:      var(--text-primary);
   border-right:    1px solid var(--border);
   display:         flex;
   flex-direction:  column;
   overflow-y:      auto;
+  overflow-x:      hidden;
+  transition:      width 0.2s ease, min-width 0.2s ease;
+}
+
+/* Collapsed state */
+.sidebar-collapsed .sidebar {
+  width:     var(--sidebar-collapsed);
+  min-width: var(--sidebar-collapsed);
+}
+
+.sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding:         0.5rem 0;
+  margin:          1px 0.25rem;
+}
+
+.sidebar-collapsed .nav-icon {
+  font-size: 1.1rem;
+}
+
+/* ── Toggle button ────────────────────────────────────────────────────────── */
+.sidebar-toggle {
+  background:    none;
+  border:        1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color:         var(--text-muted);
+  cursor:        pointer;
+  font-size:     0.75rem;
+  padding:       0.2rem 0.4rem;
+  transition:    background 0.15s, color 0.15s;
+  align-self:    flex-end;
+  margin-top:    auto;
+  flex-shrink:   0;
+}
+
+.sidebar-toggle:hover {
+  background: var(--bg-hover);
+  color:      var(--text-primary);
+}
+
+.sidebar-collapsed .sidebar-header {
+  justify-content: center;
+  align-items:     center;
+  padding:         0.75rem 0.5rem;
+}
+
+.sidebar-collapsed .sidebar-toggle {
+  align-self: center;
+  margin-top: 0;
 }
 
 .sidebar-header {
   padding:        1.25rem 1rem 1rem;
   border-bottom:  1px solid var(--border);
+  display:        flex;
+  flex-direction: row;
+  align-items:    center;
+  justify-content: space-between;
+  gap:            0.5rem;
+  flex-shrink:    0;
+}
+
+.sidebar-header-text {
   display:        flex;
   flex-direction: column;
   gap:            2px;
@@ -80,7 +144,7 @@ body {
 .sidebar-logo {
   font-size:   1.1rem;
   font-weight: 700;
-  color:       var(--accent);
+  color:       var(--accent-y);
   letter-spacing: 0.02em;
 }
 
@@ -111,7 +175,7 @@ body {
   align-items:    center;
   gap:            0.6rem;
   padding:        0.5rem 1rem;
-  color:          var(--text-secondary);
+  color:          var(--bg-surface);
   text-decoration: none;
   font-size:      0.875rem;
   border-radius:  var(--radius-sm);
@@ -126,7 +190,7 @@ body {
 
 .nav-item--active {
   background: var(--accent-soft);
-  color:      var(--accent);
+  color:      var(--accent-y);
   font-weight: 500;
 }
 
