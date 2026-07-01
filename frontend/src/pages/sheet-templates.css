@@ -1,0 +1,253 @@
+/* =============================================================================
+   sheet-templates.css
+   ============================================================================= */
+
+/* ── Button group for filters ─────────────────────────────────────────────── */
+.btn-group {
+  display: flex;
+  gap:     0;
+}
+
+.btn-group .btn {
+  border-radius: 0;
+}
+
+.btn-group .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.btn-group .btn:last-child  { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+
+/* ── Template grid (list page) ────────────────────────────────────────────── */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.template-card {
+  background:    var(--bg-surface);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding:       1.25rem;
+  cursor:        pointer;
+  transition:    border-color 0.15s, background 0.15s;
+}
+
+.template-card:hover {
+  border-color: var(--accent);
+  background:   var(--bg-raised);
+}
+
+.template-card-header {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  margin-bottom:   0.5rem;
+}
+
+.template-name {
+  font-size:   0.9rem;
+  font-weight: 600;
+  color:       var(--text-primary);
+}
+
+.template-meta {
+  font-size: 0.75rem;
+  color:     var(--text-muted);
+  display:   flex;
+  gap:       0.4rem;
+}
+
+.template-notes {
+  font-size:  0.75rem;
+  color:      var(--text-secondary);
+  margin-top: 0.5rem;
+}
+
+/* ── Section card ─────────────────────────────────────────────────────────── */
+.section-card {
+  margin-bottom: 0;
+}
+
+/* ── Product search inside section ───────────────────────────────────────── */
+.section-product-search {
+  padding:       0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background:    var(--bg-raised);
+}
+
+/* ── Section items list ───────────────────────────────────────────────────── */
+.section-items {
+  display:        flex;
+  flex-direction: column;
+}
+
+.section-item {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         0.6rem 1.25rem;
+  border-bottom:   1px solid var(--border);
+  transition:      background 0.1s;
+}
+
+.section-item:last-child { border-bottom: none; }
+.section-item:hover      { background: var(--bg-raised); }
+
+.section-item-info {
+  display:        flex;
+  flex-direction: column;
+  gap:            2px;
+}
+
+.section-item-name {
+  font-size:   0.8rem;
+  font-weight: 500;
+  color:       var(--text-primary);
+}
+
+.section-item-meta {
+  font-size: 0.7rem;
+  color:     var(--text-muted);
+}
+
+/* ── Add section button ───────────────────────────────────────────────────── */
+.add-section-btn {
+  width:      100%;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+/* ── Location list ────────────────────────────────────────────────────────── */
+.location-list {
+  display:        flex;
+  flex-direction: column;
+}
+
+.location-item {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         0.7rem 1.25rem;
+  border-bottom:   1px solid var(--border);
+}
+
+.location-item:last-child { border-bottom: none; }
+
+/* ── Inline add button ────────────────────────────────────────────────────── */
+.inline-add-row {
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  height:          20px;
+  opacity:         0;
+  transition:      opacity 0.15s;
+}
+
+.section-card:hover .inline-add-row,
+.section-items:hover .inline-add-row,
+.inline-add-row:hover {
+  opacity: 1;
+}
+
+.inline-add-btn {
+  background:    none;
+  border:        1px dashed var(--border);
+  border-radius: 50%;
+  color:         var(--text-muted);
+  cursor:        pointer;
+  font-size:     0.75rem;
+  width:         20px;
+  height:        20px;
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  padding:       0;
+  line-height:   1;
+  transition:    border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.inline-add-btn:hover {
+  border-color: var(--accent);
+  color:        var(--accent);
+  background:   var(--accent-soft);
+}
+
+.inline-add-search {
+  padding:    0.5rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Count unit tags ──────────────────────────────────────────────────────── */
+.count-units {
+  display:    flex;
+  flex-wrap:  wrap;
+  gap:        0.3rem;
+  margin-top: 0.3rem;
+  align-items: center;
+}
+
+.count-unit-tag {
+  display:       inline-flex;
+  align-items:   center;
+  gap:           0.25rem;
+  padding:       0.15rem 0.4rem;
+  background:    var(--accent-soft);
+  color:         var(--accent);
+  border-radius: var(--radius-sm);
+  font-size:     0.7rem;
+  font-weight:   500;
+}
+
+.count-unit-remove {
+  background:  none;
+  border:      none;
+  color:       var(--accent);
+  cursor:      pointer;
+  font-size:   0.65rem;
+  padding:     0;
+  line-height: 1;
+  opacity:     0.7;
+}
+
+.count-unit-remove:hover { opacity: 1; }
+
+.count-unit-default {
+  font-size:  0.7rem;
+  color:      var(--text-muted);
+  font-style: italic;
+}
+
+.count-unit-add {
+  background:    none;
+  border:        1px dashed var(--border-light);
+  border-radius: var(--radius-sm);
+  color:         var(--text-muted);
+  cursor:        pointer;
+  font-size:     0.7rem;
+  padding:       0.15rem 0.4rem;
+  font-family:   inherit;
+  transition:    border-color 0.15s, color 0.15s;
+}
+
+.count-unit-add:hover {
+  border-color: var(--accent);
+  color:        var(--accent);
+}
+
+/* ── Pending product unit picker ──────────────────────────────────────────── */
+.pending-product {
+  padding: 0.5rem;
+}
+
+.pending-product-name {
+  font-size:   0.85rem;
+  font-weight: 600;
+  color:       var(--text-primary);
+  padding:     0.25rem 0;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .template-grid {
+    grid-template-columns: 1fr;
+  }
+}

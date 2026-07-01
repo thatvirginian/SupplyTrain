@@ -1,0 +1,204 @@
+/* =============================================================================
+   product-detail.css — Product detail page styles
+   ============================================================================= */
+
+/* ── Two column layout ────────────────────────────────────────────────────── */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.detail-main { display: flex; flex-direction: column; gap: 1.25rem; }
+.detail-side { display: flex; flex-direction: column; gap: 1.25rem; }
+
+/* ── Card ─────────────────────────────────────────────────────────────────── */
+.card-header {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         0.875rem 1.25rem;
+  border-bottom:   1px solid var(--border);
+}
+
+.card-title {
+  font-size:   0.875rem;
+  font-weight: 600;
+  color:       var(--text-primary);
+}
+
+.card-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+/* ── Info display ─────────────────────────────────────────────────────────── */
+.info-grid {
+  display:        flex;
+  flex-direction: column;
+  gap:            0.6rem;
+}
+
+.info-row {
+  display:     flex;
+  align-items: baseline;
+  gap:         0.75rem;
+}
+
+.info-label {
+  font-size:      0.7rem;
+  font-weight:    600;
+  color:          var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  min-width:      100px;
+  flex-shrink:    0;
+}
+
+.info-value {
+  font-size: 0.8rem;
+  color:     var(--text-primary);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size:   0.75rem;
+  color:       var(--text-secondary);
+}
+
+/* ── Save confirm ─────────────────────────────────────────────────────────── */
+.save-confirm {
+  font-size:  0.8rem;
+  color:      var(--success);
+  font-weight: 500;
+}
+
+/* ── Vendor list ──────────────────────────────────────────────────────────── */
+.vendor-list {
+  display:        flex;
+  flex-direction: column;
+}
+
+.vendor-item {
+  padding:       0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.vendor-item:last-child { border-bottom: none; }
+
+.vendor-item--retired {
+  opacity: 0.6;
+}
+
+.vendor-header {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  margin-bottom:   0.25rem;
+}
+
+.vendor-name {
+  font-size:   0.8rem;
+  font-weight: 500;
+  color:       var(--text-primary);
+}
+
+.vendor-item-name {
+  font-size:   0.78rem;
+  color:       var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
+.vendor-code {
+  font-family: var(--font-mono);
+  font-size:   0.85rem;
+  color:       var(--accent);
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.vendor-meta {
+  font-size: 0.72rem;
+  color:     var(--text-muted);
+}
+
+.vendor-divider {
+  font-size:      0.65rem;
+  font-weight:    600;
+  color:          var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding:        0.6rem 1.25rem 0.3rem;
+  background:     var(--bg-raised);
+  border-top:     1px solid var(--border);
+  border-bottom:  1px solid var(--border);
+}
+
+/* ── Unit list ────────────────────────────────────────────────────────────── */
+.unit-list {
+  display:        flex;
+  flex-direction: column;
+}
+
+.unit-item {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         0.65rem 1.25rem;
+  border-bottom:   1px solid var(--border);
+}
+
+.unit-item:last-child { border-bottom: none; }
+
+.unit-formula {
+  font-size: 0.8rem;
+  color:     var(--text-secondary);
+}
+
+/* ── Small button variant ─────────────────────────────────────────────────── */
+.btn-sm {
+  padding:   0.3rem 0.65rem;
+  font-size: 0.75rem;
+}
+
+/* ── Location assignments ─────────────────────────────────────────────────── */
+.location-assignment-list {
+  display:        flex;
+  flex-direction: column;
+}
+
+.location-assignment-row {
+  display:         flex;
+  align-items:     flex-start;
+  justify-content: space-between;
+  padding:         0.65rem 1.25rem;
+  border-bottom:   1px solid var(--border);
+  gap:             0.5rem;
+}
+
+.location-assignment-row:last-child { border-bottom: none; }
+
+.location-assignment-info {
+  display:        flex;
+  flex-direction: column;
+  gap:            3px;
+  min-width:      0;
+  flex:           1;
+}
+
+.location-assignment-vendor {
+  display:     flex;
+  align-items: center;
+  gap:         0.4rem;
+  flex-wrap:   wrap;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
