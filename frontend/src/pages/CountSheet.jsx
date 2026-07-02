@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { useAuth } from '../App.jsx'
+import { NumericInput } from '../components/NumericInput.jsx'
 import './count-sheet.css'
 
 export default function CountSheet() {
@@ -24,17 +25,6 @@ export default function CountSheet() {
   const [expectedDate, setExpectedDate] = useState('')
 
   const touchedRef = useRef(new Set())
-
-  // Collapsed sections
-  const [collapsedSections, setCollapsedSections] = useState(new Set())
-
-  const toggleSection = (sectionId) => {
-    setCollapsedSections(prev => {
-      const next = new Set(prev)
-      next.has(sectionId) ? next.delete(sectionId) : next.add(sectionId)
-      return next
-    })
-  }
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const fetchSubmission = useCallback(async () => {
@@ -83,37 +73,6 @@ export default function CountSheet() {
     const key = `${productId}_${unitId}`
     setEntries(e => ({ ...e, [key]: value }))
     touchedRef.current.add(key)
-  }
-
-  // ── Paste cascade — paste a column from Excel and fill down ────────────────
-  const handlePaste = (e, productId, unitId) => {
-    const text = e.clipboardData.getData('text')
-    // Split on newlines (Excel rows) and/or tabs (Excel columns), filter blanks
-    const values = text.split(/\r\n|\r|\n|\t/).map(v => v.trim()).filter(v => v !== '')
-
-    // Single value — let default paste behavior happen
-    if (values.length <= 1) return
-
-    e.preventDefault()
-
-    // Find all count inputs currently in the DOM, in visual order
-    const inputs = Array.from(document.querySelectorAll('.sheet-count-input'))
-    const startKey = `${productId}_${unitId}`
-    const startIdx = inputs.findIndex(el => el.dataset.key === startKey)
-
-    if (startIdx === -1) return
-
-    const newEntries = {}
-    values.forEach((val, i) => {
-      const input = inputs[startIdx + i]
-      if (!input) return
-      const key = input.dataset.key
-      if (!key || !/^-?\d*\.?\d*$/.test(val)) return
-      newEntries[key] = val
-      touchedRef.current.add(key)
-    })
-
-    setEntries(prev => ({ ...prev, ...newEntries }))
   }
 
   // ── Order quantity calculation ─────────────────────────────────────────────
@@ -268,87 +227,72 @@ export default function CountSheet() {
       )}
 
       {/* ── Sections ── */}
-      <div className="sheet-body">
-        <div className="sheet-sections-grid">
-          {submission.sections?.map(section => {
-            const isCollapsed = collapsedSections.has(section.id)
-            const filledCount = section.items?.filter(item =>
-              item.count_units?.some(cu => entries[`${item.product_id}_${cu.unit_id}`] !== undefined && entries[`${item.product_id}_${cu.unit_id}`] !== '')
-            ).length || 0
-            const totalCount = section.items?.length || 0
+        <div className="sheet-body">
+          {submission.sections?.map(section => (
+            <div key={section.id} className="sheet-section">
+              <div className="sheet-section-title">{section.name}</div>
 
-            return (
-              <div key={section.id} className="sheet-section">
-                <div
-                  className="sheet-section-title"
-                  style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                  onClick={() => toggleSection(section.id)}>
-                  <span>{section.name}</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span style={{ fontSize: '0.65rem', opacity: 0.7, fontWeight: 400 }}>
-                      {filledCount}/{totalCount}
-                    </span>
-                    <span style={{ fontSize: '0.65rem' }}>{isCollapsed ? '▶' : '▼'}</span>
-                  </span>
-                </div>
+              {section.items?.map(item => {
+                const order = getOrderQty(item)
+                return (
+                  <div key={item.item_id} className="sheet-item">
 
-                {!isCollapsed && section.items?.map(item => {
-                  const order = getOrderQty(item)
-                  return (
-                    <div key={item.item_id} className="sheet-item">
-                      <div className="sheet-item-header">
-                        <div className="sheet-item-name">{item.product_name}</div>
-                        <div className="sheet-item-header-metrics">
-                          <div className="sheet-count-par">
-                            <label className="sheet-count-label">Par</label>
-                            <span className="sheet-par-value">
-                              {item.par ? `${item.par.par_qty} ${item.par.unit_name}` : '—'}
-                            </span>
-                          </div>
-                          <div className="sheet-count-order">
-                            <label className="sheet-count-label">Order</label>
-                            <span className={`sheet-order-value ${order.qty > 0 ? 'sheet-order-needed' : 'sheet-order-zero'}`}>
-                              {order.needsConversion
-                                ? <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>calc on submit</span>
-                                : order.qty !== null ? `${order.qty} ${order.unit}` : '—'
-                              }
-                            </span>
-                          </div>
+                    {/* NEW: Item Header containing Name, Par, and Order Summary */}
+                    <div className="sheet-item-header">
+                      <div className="sheet-item-name">{item.product_name}</div>
+
+                      <div className="sheet-item-header-metrics">
+                        <div className="sheet-count-par">
+                          <label className="sheet-count-label">Par</label>
+                          <span className="sheet-par-value">
+                            {item.par
+                              ? `${item.par.par_qty} ${item.par.unit_name}`
+                              : '—'}
+                          </span>
+                        </div>
+
+                        <div className="sheet-count-order">
+                          <label className="sheet-count-label">Order</label>
+                          <span className={`sheet-order-value ${order.qty > 0 ? 'sheet-order-needed' : 'sheet-order-zero'}`}>
+                            {order.needsConversion
+                              ? <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>calc on submit</span>
+                              : order.qty !== null
+                                ? `${order.qty} ${order.unit}`
+                                : '—'
+                            }
+                          </span>
                         </div>
                       </div>
-                      {item.count_units?.map(cu => {
-                        const key = `${item.product_id}_${cu.unit_id}`
-                        const qty = entries[key] ?? ''
-                        return (
-                          <div key={cu.unit_id} className="sheet-count-row">
-                            <div className="sheet-count-unit">{cu.unit_name}</div>
-                            <div className="sheet-count-input-wrap">
-                              <label className="sheet-count-label">On Hand</label>
-                              <input
-                                className="sheet-count-input"
-                                type="number"
-                                min="0"
-                                step="any"
-                                inputMode="decimal"
-                                placeholder="0"
-                                value={qty}
-                                disabled={isSubmitted}
-                                data-key={key}
-                                onChange={e => handleChange(item.product_id, cu.unit_id, e.target.value)}
-                                onPaste={e => handlePaste(e, item.product_id, cu.unit_id)}
-                              />
-                            </div>
-                          </div>
-                        )
-                      })}
                     </div>
-                  )
-                })}
-              </div>
-            )
-          })}
+
+                    {/* Streamlined Count Rows: Only inputs and units now */}
+                    {item.count_units?.map((cu) => {
+                      const key = `${item.product_id}_${cu.unit_id}`
+                      const qty = entries[key] ?? ''
+
+                      return (
+                        <div key={cu.unit_id} className="sheet-count-row">
+                          <div className="sheet-count-unit">{cu.unit_name}</div>
+                          <div className="sheet-count-input-wrap">
+                            <label className="sheet-count-label">On Hand</label>
+                            <NumericInput
+                              className="sheet-count-input"
+                              placeholder="0"
+                              value={qty}
+                              disabled={isSubmitted}
+                              onChange={e => handleChange(item.product_id, cu.unit_id, e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                  </div>
+                )
+              })}
+            </div>
+          ))}
         </div>
-      </div>
 
 
 
