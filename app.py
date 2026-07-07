@@ -7,15 +7,28 @@
 # =============================================================================
 
 from flask import Flask, jsonify, request, g
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from src.database_setup import get_engine
 import base64
 import json
 import logging
 import os
+import datetime
+
+class ISODateJSONProvider(DefaultJSONProvider):
+    """Serialize date/datetime as ISO 8601 strings instead of RFC 2822."""
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        if isinstance(obj, datetime.date):
+            return obj.isoformat()  # → "2026-07-01"
+        return super().default(obj)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
+app.json_provider_class = ISODateJSONProvider
+app.json = ISODateJSONProvider(app)
 CORS(app, supports_credentials=True)   # Allow React dev server to call Flask
 
 engine = get_engine()
