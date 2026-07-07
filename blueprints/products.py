@@ -163,6 +163,8 @@ def list_products():
     active       = request.args.get('active', 'true').lower() != 'false'
     search       = request.args.get('search', '').strip()
     has_vendor   = request.args.get('has_vendor')
+    vendor_id    = request.args.get('vendor_id', type=int)
+    location_id  = request.args.get('location_id')
     page         = request.args.get('page', 1, type=int)
     per_page     = request.args.get('per_page', 50, type=int)
     offset       = (page - 1) * per_page
@@ -186,6 +188,34 @@ def list_products():
         filters.append('EXISTS (SELECT 1 FROM vendor_items vi WHERE vi.product_id = p.id)')
     elif has_vendor == 'false':
         filters.append('NOT EXISTS (SELECT 1 FROM vendor_items vi WHERE vi.product_id = p.id)')
+
+    if vendor_id and location_id:
+        # Filter by resolved vendor — location-specific first, then global active
+        filters.append("""
+            EXISTS (
+                SELECT 1 FROM vendor_items vi
+                LEFT JOIN location_vendor_items lvi
+                    ON lvi.product_id   = p.id
+                    AND lvi.location_id = :location_id
+                LEFT JOIN vendor_items lvi_vi ON lvi.vendor_item_id = lvi_vi.id
+                WHERE vi.product_id = p.id
+                AND COALESCE(lvi_vi.vendor_id, vi.vendor_id) = :vendor_id
+                AND (lvi.vendor_item_id IS NOT NULL OR vi.active = TRUE)
+            )
+        """)
+        params['vendor_id']   = vendor_id
+        params['location_id'] = location_id
+    elif vendor_id:
+        # No location — just filter by global active vendor item
+        filters.append("""
+            EXISTS (
+                SELECT 1 FROM vendor_items vi
+                WHERE vi.product_id = p.id
+                AND vi.vendor_id    = :vendor_id
+                AND vi.active       = TRUE
+            )
+        """)
+        params['vendor_id'] = vendor_id
 
     where = ' AND '.join(filters)
 
