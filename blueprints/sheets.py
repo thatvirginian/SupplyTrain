@@ -160,9 +160,10 @@ def get_engine():
 
 def _get_user_location(conn):
     """Get location_id for staff user from locations.contact_email."""
-    email = g.user.get('email', '')
+    email = g.user.get('email', '').lower()
+
     row = conn.execute(text("""
-        SELECT store_guid FROM locations WHERE contact_email = :email
+        SELECT store_guid FROM locations WHERE LOWER(contact_email) = :email
     """), {'email': email}).fetchone()
     return str(row.store_guid) if row else None
 
