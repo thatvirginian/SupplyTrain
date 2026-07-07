@@ -1,0 +1,14 @@
+/* Global reset — Layout.css handles the rest */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+}
+
+#root {
+  height: 100vh;
+}
