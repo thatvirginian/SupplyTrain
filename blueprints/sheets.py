@@ -1805,9 +1805,10 @@ def submit_sheet(submission_id):
 @bp.route('/par-levels', methods=['GET'])
 @store_required
 def list_par_levels():
-    """Get par levels for a location, optionally filtered by product_ids."""
+    """Get par levels for a location, optionally filtered by product_ids or vendor."""
     location_id = request.args.get('location_id')
     product_ids = request.args.getlist('product_id', type=int)
+    vendor_id   = request.args.get('vendor_id', type=int)
     roles       = g.user.get('roles', [])
     is_admin    = 'admin' in roles
 
@@ -1821,6 +1822,22 @@ def list_par_levels():
         if product_ids:
             filters.append('ppl.product_id = ANY(:product_ids)')
             params['product_ids'] = product_ids
+
+        if vendor_id:
+            # Filter by active vendor item for this location
+            filters.append("""
+                ppl.product_id IN (
+                    SELECT vi.product_id
+                    FROM vendor_items vi
+                    LEFT JOIN location_vendor_items lvi
+                        ON lvi.product_id   = vi.product_id
+                        AND lvi.location_id = :location_id
+                    LEFT JOIN vendor_items lvi_vi ON lvi.vendor_item_id = lvi_vi.id
+                    WHERE COALESCE(lvi_vi.vendor_id, vi.vendor_id) = :vendor_id
+                    AND (lvi.vendor_item_id IS NOT NULL OR vi.active = TRUE)
+                )
+            """)
+            params['vendor_id'] = vendor_id
 
         where = ' AND '.join(filters)
 
@@ -1841,14 +1858,13 @@ def list_par_levels():
                 ru.id       AS recommended_unit_id,
                 ou.name     AS override_unit,
                 ou.id       AS override_unit_id,
-                -- Effective par
-                COALESCE(ppl.override_qty,      ppl.recommended_qty)      AS par_qty,
-                COALESCE(ou.id,                 ru.id)                    AS unit_id,
-                COALESCE(ou.name,               ru.name)                  AS unit_name
+                COALESCE(ppl.override_qty,  ppl.recommended_qty) AS par_qty,
+                COALESCE(ou.id,             ru.id)               AS unit_id,
+                COALESCE(ou.name,           ru.name)             AS unit_name
             FROM product_par_levels ppl
-            JOIN products p          ON ppl.product_id         = p.id
-            LEFT JOIN units ru       ON ppl.recommended_unit_id = ru.id
-            LEFT JOIN units ou       ON ppl.override_unit_id    = ou.id
+            JOIN products p      ON ppl.product_id         = p.id
+            LEFT JOIN units ru   ON ppl.recommended_unit_id = ru.id
+            LEFT JOIN units ou   ON ppl.override_unit_id    = ou.id
             WHERE {where}
             ORDER BY p.name, ppl.day_of_week NULLS FIRST
         """), params).mappings().all()
