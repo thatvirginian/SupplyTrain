@@ -260,6 +260,8 @@ def create_sheet_template():
             template_id = result.fetchone().id
         return jsonify({'id': template_id}), 201
     except Exception as e:
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            return jsonify({'error': f'A template named "{name}" already exists.'}), 409
         logger.error(f'create_sheet_template: {e}')
         return jsonify({'error': str(e)}), 500
 
@@ -390,6 +392,99 @@ def get_sheet_template(template_id):
     return jsonify(result)
 
 
+@bp.route('/sheet-templates/<int:template_id>/duplicate', methods=['POST'])
+@admin_required
+def duplicate_sheet_template(template_id):
+    """Duplicate a sheet template with all sections, items and count units."""
+    try:
+        with get_engine().begin() as conn:
+            # Get source template
+            source = conn.execute(text("""
+                SELECT name, notes, is_commissary FROM sheet_templates WHERE id = :id
+            """), {'id': template_id}).fetchone()
+
+            if not source:
+                return jsonify({'error': 'Template not found'}), 404
+
+            # Create new template
+            new_tmpl = conn.execute(text("""
+                INSERT INTO sheet_templates (name, notes, is_commissary, active, created_by)
+                VALUES (:name, :notes, :is_commissary, TRUE, :created_by)
+                RETURNING id
+            """), {
+                'name':          f'Copy of {source.name}',
+                'notes':         source.notes,
+                'is_commissary': source.is_commissary,
+                'created_by':    g.user.get('email'),
+            }).fetchone().id
+
+            # Get source sections
+            sections = conn.execute(text("""
+                SELECT id, name, sort_order FROM sheet_sections
+                WHERE template_id = :id ORDER BY sort_order
+            """), {'id': template_id}).fetchall()
+
+            for section in sections:
+                # Create new section
+                new_section = conn.execute(text("""
+                    INSERT INTO sheet_sections (template_id, name, sort_order)
+                    VALUES (:template_id, :name, :sort_order)
+                    RETURNING id
+                """), {
+                    'template_id': new_tmpl,
+                    'name':        section.name,
+                    'sort_order':  section.sort_order,
+                }).fetchone().id
+
+                # Get source items
+                items = conn.execute(text("""
+                    SELECT id, product_id, sort_order FROM sheet_section_items
+                    WHERE section_id = :id ORDER BY sort_order
+                """), {'id': section.id}).fetchall()
+
+                for item in items:
+                    # Create new item
+                    new_item = conn.execute(text("""
+                        INSERT INTO sheet_section_items (section_id, product_id, sort_order)
+                        VALUES (:section_id, :product_id, :sort_order)
+                        RETURNING id
+                    """), {
+                        'section_id': new_section,
+                        'product_id': item.product_id,
+                        'sort_order': item.sort_order,
+                    }).fetchone().id
+
+                    # Copy count units
+                    units = conn.execute(text("""
+                        SELECT unit_id, sort_order FROM sheet_section_item_units
+                        WHERE item_id = :id ORDER BY sort_order
+                    """), {'id': item.id}).fetchall()
+
+                    for unit in units:
+                        conn.execute(text("""
+                            INSERT INTO sheet_section_item_units (item_id, unit_id, sort_order)
+                            VALUES (:item_id, :unit_id, :sort_order)
+                        """), {
+                            'item_id':    new_item,
+                            'unit_id':    unit.unit_id,
+                            'sort_order': unit.sort_order,
+                        })
+
+            # Copy location assignments
+            conn.execute(text("""
+                INSERT INTO sheet_template_locations (template_id, location_id)
+                SELECT :new_id, location_id FROM sheet_template_locations
+                WHERE template_id = :old_id
+            """), {'new_id': new_tmpl, 'old_id': template_id})
+
+        return jsonify({'id': new_tmpl}), 201
+    except Exception as e:
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            return jsonify({'error': 'A template with that name already exists. Rename the original first.'}), 409
+        logger.error(f'duplicate_sheet_template: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @bp.route('/sheet-templates/<int:template_id>/toggle-active', methods=['POST'])
 @admin_required
 def toggle_template_active(template_id):
@@ -433,6 +528,8 @@ def update_sheet_template(template_id):
             })
         return jsonify({'status': 'ok'})
     except Exception as e:
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            return jsonify({'error': f'A template with that name already exists.'}), 409
         logger.error(f'update_sheet_template: {e}')
         return jsonify({'error': str(e)}), 500
 
@@ -1513,9 +1610,14 @@ def submit_sheet(submission_id):
                 if is_comm:
                     comm_template = conn.execute(text("""
                         SELECT ct.id FROM comm_order_templates ct
-                        WHERE ct.location_id = :location_id AND ct.active = TRUE
+                        WHERE ct.location_id = :location_id
+                        AND ct.vendor_id     = :vendor_id
+                        AND ct.active        = TRUE
                         LIMIT 1
-                    """), {'location_id': sub['location_id']}).fetchone()
+                    """), {
+                        'location_id': sub['location_id'],
+                        'vendor_id':   vid,
+                    }).fetchone()
 
                     if comm_template:
                         tmpl_sections = conn.execute(text("""
@@ -2059,32 +2161,181 @@ def update_purchase_order(po_id):
 @bp.route('/purchase-orders/<int:po_id>/items', methods=['POST'])
 @manage_required
 def add_order_item(po_id):
-    """Add a line item to an order."""
-    data = request.get_json(force=True)
+    """
+    Add a product to an existing draft PO.
+    - Resolves vendor item from location_vendor_items (falls back to global active)
+    - For commissary POs, looks up comm template to assign correct section
+    - Creates 'Other' section if product not found in template
+    """
+    data       = request.get_json(force=True)
+    product_id = data.get('product_id')
+    quantity   = data.get('order_quantity', 0)
+    unit_id    = data.get('unit_id')  # optional override
+
+    if not product_id:
+        return jsonify({'error': 'product_id is required'}), 400
+
     try:
         with get_engine().begin() as conn:
+            # Get PO info
+            po = conn.execute(text("""
+                SELECT po.id, po.location_id, po.vendor_id, po.is_commissary, po.status
+                FROM purchase_orders po
+                WHERE po.id = :id
+            """), {'id': po_id}).fetchone()
+
+            if not po:
+                return jsonify({'error': 'Order not found'}), 404
+            if po.status != 'draft':
+                return jsonify({'error': 'Can only add items to draft orders'}), 400
+
+            # Resolve vendor item
+            vendor_item = conn.execute(text("""
+                SELECT
+                    COALESCE(lvi_vi.id,            vi_g.id)            AS vendor_item_id,
+                    COALESCE(lvi_vi.vendor_code,   vi_g.vendor_code)   AS vendor_code,
+                    COALESCE(lvi_vi.order_unit_id, vi_g.order_unit_id) AS order_unit_id,
+                    COALESCE(lvi_vi.price,         vi_g.price)         AS price,
+                    p.name      AS product_name,
+                    p.base_unit_id
+                FROM products p
+                LEFT JOIN location_vendor_items lvi
+                    ON lvi.product_id = p.id AND lvi.location_id = :location_id
+                LEFT JOIN vendor_items lvi_vi ON lvi.vendor_item_id = lvi_vi.id
+                LEFT JOIN vendor_items vi_g
+                    ON vi_g.product_id = p.id AND vi_g.active = TRUE
+                WHERE p.id = :product_id
+            """), {
+                'product_id':  product_id,
+                'location_id': po.location_id,
+            }).fetchone()
+
+            if not vendor_item:
+                return jsonify({'error': 'Product not found'}), 404
+
+            # Resolve comm section if commissary order
+            comm_section_id = None
+            if po.is_commissary:
+                # Look up template for this location+vendor
+                template = conn.execute(text("""
+                    SELECT ct.id FROM comm_order_templates ct
+                    WHERE ct.location_id = :location_id
+                    AND ct.vendor_id     = :vendor_id
+                    AND ct.active        = TRUE
+                    LIMIT 1
+                """), {
+                    'location_id': po.location_id,
+                    'vendor_id':   po.vendor_id,
+                }).fetchone()
+
+                if template:
+                    # Find which section this product belongs to
+                    section_row = conn.execute(text("""
+                        SELECT s.name, s.sort_order
+                        FROM comm_order_template_items i
+                        JOIN comm_order_template_sections s ON i.section_id = s.id
+                        WHERE s.template_id = :template_id
+                        AND i.product_id    = :product_id
+                        LIMIT 1
+                    """), {
+                        'template_id': template.id,
+                        'product_id':  product_id,
+                    }).fetchone()
+
+                    section_name = section_row.name if section_row else 'Other'
+                    section_sort = section_row.sort_order if section_row else 999
+
+                    # Find or create the comm_order_section on this PO
+                    existing_section = conn.execute(text("""
+                        SELECT id FROM comm_order_sections
+                        WHERE purchase_order_id = :po_id AND name = :name
+                    """), {'po_id': po_id, 'name': section_name}).fetchone()
+
+                    if existing_section:
+                        comm_section_id = existing_section.id
+                    else:
+                        comm_section_id = conn.execute(text("""
+                            INSERT INTO comm_order_sections (purchase_order_id, name, sort_order)
+                            VALUES (:po_id, :name, :sort_order)
+                            RETURNING id
+                        """), {
+                            'po_id':      po_id,
+                            'name':       section_name,
+                            'sort_order': section_sort,
+                        }).fetchone().id
+
+            # Use provided unit_id or fall back to vendor item's order unit
+            resolved_unit_id = unit_id or vendor_item.order_unit_id
+
+            # Calculate base_quantity
+            base_quantity = None
+            base_unit_id  = vendor_item.base_unit_id
+            if resolved_unit_id and base_unit_id and float(quantity) > 0:
+                if resolved_unit_id == base_unit_id:
+                    base_quantity = float(quantity)
+                else:
+                    conv = conn.execute(text("""
+                        SELECT conversion, from_unit_id, to_unit_id
+                        FROM unit_conversions
+                        WHERE (
+                            (from_unit_id = :unit_id AND to_unit_id = :base_unit_id)
+                            OR
+                            (from_unit_id = :base_unit_id AND to_unit_id = :unit_id)
+                        )
+                        AND (product_id = :product_id OR product_id IS NULL)
+                        ORDER BY product_id NULLS LAST,
+                                 CASE WHEN from_unit_id = :unit_id THEN 0 ELSE 1 END
+                        LIMIT 1
+                    """), {
+                        'unit_id':      resolved_unit_id,
+                        'base_unit_id': base_unit_id,
+                        'product_id':   product_id,
+                    }).fetchone()
+                    if conv:
+                        if conv.from_unit_id == resolved_unit_id:
+                            base_quantity = float(quantity) * float(conv.conversion)
+                        else:
+                            base_quantity = float(quantity) / float(conv.conversion)
+
+            # Insert item
             result = conn.execute(text("""
                 INSERT INTO purchase_order_items (
                     purchase_order_id, product_id, vendor_item_id,
-                    vendor_code, product_name, order_unit_id, order_quantity, notes
+                    vendor_code, product_name, order_unit_id,
+                    order_quantity, original_quantity,
+                    base_quantity, base_unit_id,
+                    comm_section_id,
+                    edited_by, edited_at
                 ) VALUES (
                     :po_id, :product_id, :vendor_item_id,
-                    :vendor_code, :product_name, :order_unit_id, :order_quantity, :notes
+                    :vendor_code, :product_name, :order_unit_id,
+                    :order_quantity, :order_quantity,
+                    :base_quantity, :base_unit_id,
+                    :comm_section_id,
+                    :edited_by, NOW()
                 )
                 ON CONFLICT (purchase_order_id, product_id) DO UPDATE SET
-                    order_quantity = EXCLUDED.order_quantity,
-                    vendor_code    = EXCLUDED.vendor_code,
-                    notes          = EXCLUDED.notes
+                    order_quantity   = EXCLUDED.order_quantity,
+                    original_quantity = EXCLUDED.original_quantity,
+                    order_unit_id    = EXCLUDED.order_unit_id,
+                    base_quantity    = EXCLUDED.base_quantity,
+                    base_unit_id     = EXCLUDED.base_unit_id,
+                    comm_section_id  = EXCLUDED.comm_section_id,
+                    edited_by        = EXCLUDED.edited_by,
+                    edited_at        = NOW()
                 RETURNING id
             """), {
-                'po_id':          po_id,
-                'product_id':     data.get('product_id'),
-                'vendor_item_id': data.get('vendor_item_id'),
-                'vendor_code':    data.get('vendor_code'),
-                'product_name':   data.get('product_name'),
-                'order_unit_id':  data.get('order_unit_id'),
-                'order_quantity': data.get('order_quantity'),
-                'notes':          data.get('notes'),
+                'po_id':           po_id,
+                'product_id':      product_id,
+                'vendor_item_id':  vendor_item.vendor_item_id,
+                'vendor_code':     vendor_item.vendor_code,
+                'product_name':    vendor_item.product_name,
+                'order_unit_id':   resolved_unit_id,
+                'order_quantity':  float(quantity),
+                'base_quantity':   base_quantity,
+                'base_unit_id':    base_unit_id,
+                'comm_section_id': comm_section_id,
+                'edited_by':       g.user.get('email'),
             })
             item_id = result.fetchone().id
         return jsonify({'id': item_id}), 201
@@ -2276,22 +2527,33 @@ def delete_order_item(item_id):
 @bp.route('/comm-order-templates', methods=['GET'])
 @comm_manage_required
 def list_comm_order_templates():
-    """List all commissary order templates."""
+    """List commissary order templates, optionally filtered by location(s)."""
+    location_ids = request.args.getlist('location_id')
+
     with get_engine().connect() as conn:
-        rows = conn.execute(text("""
+        where = ''
+        params = {}
+        if location_ids:
+            where = 'WHERE ct.location_id = ANY(:location_ids)'
+            params['location_ids'] = location_ids
+
+        rows = conn.execute(text(f"""
             SELECT
-                ct.id, ct.location_id, ct.name, ct.notes, ct.active,
+                ct.id, ct.location_id, ct.vendor_id, ct.name, ct.notes, ct.active,
                 ct.created_at, ct.updated_at,
                 l.location_name,
+                v.name AS vendor_name,
                 COUNT(DISTINCT cts.id) AS section_count,
                 COUNT(DISTINCT cti.id) AS item_count
             FROM comm_order_templates ct
-            LEFT JOIN locations l              ON l.store_guid::text = ct.location_id
-            LEFT JOIN comm_order_template_sections cts ON cts.template_id = ct.id
-            LEFT JOIN comm_order_template_items cti    ON cti.section_id  = cts.id
-            GROUP BY ct.id, l.location_name
-            ORDER BY l.location_name
-        """)).mappings().all()
+            LEFT JOIN locations l                      ON l.store_guid::text = ct.location_id
+            LEFT JOIN vendors v                        ON ct.vendor_id       = v.id
+            LEFT JOIN comm_order_template_sections cts ON cts.template_id   = ct.id
+            LEFT JOIN comm_order_template_items cti    ON cti.section_id    = cts.id
+            {where}
+            GROUP BY ct.id, l.location_name, v.name
+            ORDER BY l.location_name, v.name
+        """), params).mappings().all()
     return jsonify([dict(r) for r in rows])
 
 
@@ -2300,19 +2562,22 @@ def list_comm_order_templates():
 def create_comm_order_template():
     data        = request.get_json(force=True)
     location_id = data.get('location_id')
+    vendor_id   = data.get('vendor_id')
     name        = (data.get('name') or '').strip()
 
     if not location_id:
         return jsonify({'error': 'location_id is required'}), 400
+    if not vendor_id:
+        return jsonify({'error': 'vendor_id is required'}), 400
     if not name:
         return jsonify({'error': 'name is required'}), 400
 
     try:
         with get_engine().begin() as conn:
             result = conn.execute(text("""
-                INSERT INTO comm_order_templates (location_id, name, notes, created_by)
-                VALUES (:location_id, :name, :notes, :created_by)
-                ON CONFLICT (location_id) DO UPDATE SET
+                INSERT INTO comm_order_templates (location_id, vendor_id, name, notes, created_by)
+                VALUES (:location_id, :vendor_id, :name, :notes, :created_by)
+                ON CONFLICT (location_id, vendor_id) DO UPDATE SET
                     name       = EXCLUDED.name,
                     notes      = EXCLUDED.notes,
                     active     = TRUE,
@@ -2320,6 +2585,7 @@ def create_comm_order_template():
                 RETURNING id
             """), {
                 'location_id': location_id,
+                'vendor_id':   int(vendor_id),
                 'name':        name,
                 'notes':       data.get('notes'),
                 'created_by':  g.user.get('email'),
@@ -2337,10 +2603,13 @@ def get_comm_order_template(template_id):
     """Full commissary template detail with sections and items."""
     with get_engine().connect() as conn:
         template = conn.execute(text("""
-            SELECT ct.id, ct.location_id, ct.name, ct.notes, ct.active,
-                   ct.created_at, ct.updated_at, l.location_name
+            SELECT ct.id, ct.location_id, ct.vendor_id, ct.name, ct.notes, ct.active,
+                   ct.created_at, ct.updated_at,
+                   l.location_name,
+                   v.name AS vendor_name
             FROM comm_order_templates ct
             LEFT JOIN locations l ON l.store_guid::text = ct.location_id
+            LEFT JOIN vendors v   ON ct.vendor_id       = v.id
             WHERE ct.id = :id
         """), {'id': template_id}).mappings().fetchone()
 
