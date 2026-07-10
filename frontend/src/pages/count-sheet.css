@@ -111,9 +111,10 @@
 
 .sheet-btn-primary {
   background: var(--bg-raised);
-  color:      #fff;
+  color:      var(--text-primary);
+  border:     1px solid var(--border);
 }
-.sheet-btn-primary:not(:disabled):hover { background: var(--accent-hover); }
+.sheet-btn-primary:not(:disabled):hover { background: var(--accent-y); }
 
 .sheet-btn-secondary {
   background: var(--bg-raised);

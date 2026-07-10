@@ -53,9 +53,9 @@ def load_user():
         # Local dev — no EasyAuth headers
         g.user = {
             'user_id':   'dev',
-            'username':  'chantilly@anitascorp.com',
-            'email':     'chantilly@anitascorp.com',
-            'roles':     ['admin'],
+            'username':  'ControlAnalyst@anitascorp.com',
+            'email':     'ControlAnalyst@anitascorp.com',
+            'roles':     ['store'],
             'is_admin':  True,
         }
         return

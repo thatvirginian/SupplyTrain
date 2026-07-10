@@ -26,7 +26,7 @@ from flask import Blueprint, jsonify, request, g
 from sqlalchemy import text
 from functools import wraps
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -132,12 +132,12 @@ def comm_manage_required(f):
 
 def comm_item_edit_required(f):
     """
-    Admin, GM, Commissary GM can edit anything.
-    Commissary can only edit order_quantity and is_short (not delete).
+    Admin, GM, Commissary GM, Commissary, or Store can access.
+    Business logic inside each route enforces what each role can do.
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not _has_role(ADMIN, GM, COMM_GM, COMMISSARY):
+        if not _has_role(ADMIN, GM, COMM_GM, COMMISSARY, STORE):
             return jsonify({'error': 'Access required'}), 403
         return f(*args, **kwargs)
     return decorated
@@ -160,10 +160,9 @@ def get_engine():
 
 def _get_user_location(conn):
     """Get location_id for staff user from locations.contact_email."""
-    email = g.user.get('email', '').lower()
-
+    email = g.user.get('email', '')
     row = conn.execute(text("""
-        SELECT store_guid FROM locations WHERE LOWER(contact_email) = :email
+        SELECT store_guid FROM locations WHERE contact_email = :email
     """), {'email': email}).fetchone()
     return str(row.store_guid) if row else None
 
@@ -842,7 +841,7 @@ def create_sheet_submission():
                 WHERE template_id  = :template_id
                 AND location_id    = :location_id
                 AND count_date     = :count_date
-                AND status         = 'draft'
+                AND status         = 'open'
                 LIMIT 1
             """), {
                 'template_id': template_id,
@@ -1105,6 +1104,340 @@ def get_sheet_submission(submission_id):
     result = dict(submission)
     result['sections'] = sorted(section_map.values(), key=lambda s: s['sort_order'])
     return jsonify(result)
+
+
+@bp.route('/sheet-submissions/<int:submission_id>/pdf', methods=['GET'])
+@store_required
+def sheet_submission_pdf(submission_id):
+    """Generate a compact printable PDF of a count sheet."""
+    import io
+    import os
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        HRFlowable, Image
+    )
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+
+    with get_engine().connect() as conn:
+        submission = conn.execute(text("""
+            SELECT
+                ss.id, ss.template_id, ss.location_id,
+                ss.count_date, ss.status,
+                ss.submitted_by, ss.submitted_at, ss.notes,
+                st.name     AS template_name,
+                l.location_name,
+                l.abbreviation
+            FROM sheet_submissions ss
+            JOIN sheet_templates st ON ss.template_id = st.id
+            LEFT JOIN locations l   ON l.store_guid::text = ss.location_id
+            WHERE ss.id = :id
+        """), {'id': submission_id}).mappings().fetchone()
+
+        if not submission:
+            return jsonify({'error': 'Submission not found'}), 404
+
+        # Calculate day of week from count_date (0=Sunday)
+        from datetime import datetime
+        try:
+            count_date = submission['count_date']
+            if hasattr(count_date, 'weekday'):
+                dow = (count_date.weekday() + 1) % 7
+            else:
+                dt  = datetime.strptime(str(count_date)[:10], '%Y-%m-%d')
+                dow = (dt.weekday() + 1) % 7
+        except Exception:
+            dow = None
+
+        sections_raw = conn.execute(text("""
+            SELECT
+                sec.id         AS section_id,
+                sec.name       AS section_name,
+                sec.sort_order AS section_sort,
+                ssi.id         AS item_id,
+                ssi.product_id,
+                ssi.sort_order AS item_sort,
+                p.name         AS product_name,
+                -- On hand entries (summed across all units for this product)
+                se.quantity    AS on_hand_qty,
+                u_se.name      AS on_hand_unit,
+                -- DOW-aware par: prefer day-specific override, fall back to default
+                COALESCE(
+                    ppl_dow.override_qty,     ppl_dow.recommended_qty,
+                    ppl_def.override_qty,     ppl_def.recommended_qty
+                ) AS par_qty,
+                COALESCE(
+                    ppl_dow.override_unit_id, ppl_dow.recommended_unit_id,
+                    ppl_def.override_unit_id, ppl_def.recommended_unit_id
+                ) AS par_unit_id,
+                COALESCE(pu_dow.name, ru_dow.name, pu_def.name, ru_def.name) AS par_unit
+            FROM sheet_sections sec
+            JOIN sheet_section_items ssi ON ssi.section_id    = sec.id
+            JOIN products p              ON ssi.product_id    = p.id
+            LEFT JOIN sheet_entries se
+                ON se.submission_id = :submission_id
+                AND se.product_id   = p.id
+            LEFT JOIN units u_se ON se.unit_id = u_se.id
+            LEFT JOIN product_par_levels ppl_dow
+                ON ppl_dow.product_id   = p.id
+                AND ppl_dow.location_id = :location_id
+                AND ppl_dow.day_of_week = :dow
+            LEFT JOIN product_par_levels ppl_def
+                ON ppl_def.product_id   = p.id
+                AND ppl_def.location_id = :location_id
+                AND ppl_def.day_of_week IS NULL
+            LEFT JOIN units pu_dow ON ppl_dow.override_unit_id     = pu_dow.id
+            LEFT JOIN units ru_dow ON ppl_dow.recommended_unit_id  = ru_dow.id
+            LEFT JOIN units pu_def ON ppl_def.override_unit_id     = pu_def.id
+            LEFT JOIN units ru_def ON ppl_def.recommended_unit_id  = ru_def.id
+            WHERE sec.template_id = :template_id
+            ORDER BY sec.sort_order, ssi.sort_order
+        """), {
+            'submission_id': submission_id,
+            'template_id':   submission['template_id'],
+            'location_id':   submission['location_id'],
+            'dow':           dow,
+        }).mappings().all()
+
+    # Build sections dict
+    section_map = {}
+    section_order = []
+    for row in sections_raw:
+        sid = row['section_id']
+        if sid not in section_map:
+            section_map[sid] = {
+                'name':  row['section_name'],
+                'items': [],
+            }
+            section_order.append(sid)
+        section_map[sid]['items'].append(row)
+
+    sections = [section_map[sid] for sid in section_order]
+
+    # ── PDF layout ─────────────────────────────────────────────────────────────
+    buf = io.BytesIO()  # kept for compatibility, buf2 used for actual output
+    PAGE_W, PAGE_H = letter
+    MARGIN = 0.5 * inch
+
+    # Colours
+    RED   = colors.HexColor('#C0392B')
+    DARK  = colors.HexColor('#1a1a1a')
+    GREY  = colors.HexColor('#666666')
+    LGREY = colors.HexColor('#f2f2f2')
+    DGREY = colors.HexColor('#dddddd')
+    WHITE = colors.white
+
+    # Styles
+    def style(name, **kw):
+        return ParagraphStyle(name, **kw)
+
+    hdr_title = style('HdrTitle', fontSize=16, fontName='Helvetica-Bold',
+                      textColor=DARK, leading=20)
+    hdr_sub   = style('HdrSub',   fontSize=8,  fontName='Helvetica',
+                      textColor=GREY, leading=11)
+    sec_hdr   = style('SecHdr',   fontSize=7,  fontName='Helvetica-Bold',
+                      textColor=WHITE, leading=9)
+    item_name = style('ItemName', fontSize=7,  fontName='Helvetica',
+                      textColor=DARK, leading=9)
+    par_style = style('Par',      fontSize=6.5,fontName='Helvetica',
+                      textColor=GREY, leading=8)
+
+    story = []
+
+    # ── 2-column section layout using Frames ──────────────────────────────────
+    from reportlab.platypus import FrameBreak
+    from reportlab.platypus.frames import Frame
+    from reportlab.platypus import BaseDocTemplate, PageTemplate
+
+    count_date_str = str(submission['count_date'])[:10] if submission['count_date'] else '—'
+    submitted_str  = submission['submitted_by'] or '—'
+    logo_path = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'logo.png')
+
+    COL_W   = (PAGE_W - 2 * MARGIN - 6) / 2  # 6pt gutter
+    ITEM_W  = [COL_W * 0.62, COL_W * 0.2, COL_W * 0.18]
+
+    def build_section_table(section):
+        """Build a mini-table for one section."""
+        rows = []
+        rows.append([Paragraph(section['name'], sec_hdr), '', ''])
+        rows.append([
+            Paragraph('Product', par_style),
+            Paragraph('O/H', par_style),
+            Paragraph('Par', par_style),
+        ])
+        for item in section['items']:
+            par_text = ''
+            if item['par_qty'] is not None:
+                par_val = float(item['par_qty'])
+                par_text = f"{par_val:g} - {item['par_unit'] or ''}"
+
+            # On hand — show if entered, blank box if not
+            on_hand_text = ''
+            if item['on_hand_qty'] is not None:
+                oh_val = float(item['on_hand_qty'])
+                on_hand_text = f"{oh_val:g}"
+
+            rows.append([
+                Paragraph(item['product_name'], item_name),
+                Paragraph(on_hand_text, par_style) if on_hand_text else '',
+                Paragraph(par_text, par_style),
+            ])
+
+        row_count = len(rows)
+        # repeatRows=2 repeats section header + column subheader when split
+        t = Table(rows, colWidths=ITEM_W, repeatRows=2)
+        t.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (2,0),  RED),
+            ('TEXTCOLOR',     (0,0), (2,0),  WHITE),
+            ('FONTNAME',      (0,0), (2,0),  'Times-Bold'),
+            ('FONTSIZE',      (0,0), (2,0),  4),
+            ('SPAN',          (0,0), (2,0)),
+            ('TOPPADDING',    (0,0), (2,0),  0),
+            ('BOTTOMPADDING', (0,0), (2,0),  0),
+            ('LEFTPADDING',   (0,0), (2,0),  4),
+            ('BACKGROUND',    (0,1), (2,1),  LGREY),
+            ('FONTNAME',      (0,1), (2,1),  'Times-Bold'),
+            ('FONTSIZE',      (0,1), (2,1),  6),
+            ('TOPPADDING',    (0,1), (2,1),  2),
+            ('BOTTOMPADDING', (0,1), (2,1),  2),
+            ('FONTSIZE',      (0,2), (-1,-1), 4),
+            ('TOPPADDING',    (0,2), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,2), (-1,-1), 0),
+            ('LEFTPADDING',   (0,0), (-1,-1), 3),
+            ('RIGHTPADDING',  (0,0), (-1,-1), 3),
+            ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+            ('BOX',           (1,2), (1, row_count-1), 0.5, DARK),
+            ('BACKGROUND',    (1,2), (1, row_count-1), WHITE),
+            *[('BACKGROUND',  (0,i), (2,i), LGREY if i % 2 == 0 else WHITE)
+              for i in range(2, row_count)],
+            ('LINEBELOW',     (0,1), (-1,-1), 0.25, DGREY),
+            ('BOX',           (0,0), (-1,-1), 0.5, DGREY),
+        ]))
+        return t
+
+    # Add sections to story — each section is a separate flowable
+    # Use KeepTogether to avoid splitting a section header from its first row
+    from reportlab.platypus import KeepTogether
+    for section in sections:
+        tbl = build_section_table(section)
+        # KeepTogether only for header + first few rows to avoid orphan headers
+        story.append(tbl)
+        story.append(Spacer(1, 5))
+
+    # ── Build with canvas callback for header ─────────────────────────────────
+    buf2    = io.BytesIO()
+    HDR_H   = 0.65 * inch   # reserved space at top of first page for header
+    COL_GAP = 6
+
+    # Two-column frames for later pages (full height)
+    def later_frames():
+        return [
+            Frame(MARGIN, MARGIN, COL_W, PAGE_H - 2*MARGIN,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='left'),
+            Frame(MARGIN + COL_W + COL_GAP, MARGIN, COL_W, PAGE_H - 2*MARGIN,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='right'),
+        ]
+
+    # First page frames — shorter to leave room for header drawn by canvas
+    def first_frames():
+        body_h = PAGE_H - 1.5*MARGIN - HDR_H - 8
+        return [
+            Frame(MARGIN, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='left'),
+            Frame(MARGIN + COL_W + COL_GAP, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='right'),
+        ]
+
+    def draw_header(canvas, doc):
+        """Draw header directly onto canvas — runs on first page only."""
+        canvas.saveState()
+        y_top = PAGE_H - 0.3 * inch
+
+        # Logo or brand text
+        if os.path.exists(logo_path):
+            canvas.drawImage(logo_path, MARGIN, y_top - 0.55*inch,
+                             width=1.1*inch, height=0.45*inch,
+                             preserveAspectRatio=True, mask='auto')
+            x_title = MARGIN + 1.2*inch
+        else:
+            canvas.setFont('Helvetica-Bold', 10)
+            canvas.setFillColor(RED)
+            canvas.drawString(MARGIN, y_top - 0.28*inch, "Anita's New Mexico")
+            x_title = MARGIN + 1.5*inch
+
+        # Title
+        canvas.setFillColor(DARK)
+        canvas.setFont('Times-Bold', 16)
+        canvas.drawString(x_title, y_top - 0.3*inch, submission['abbreviation'] or '')
+        canvas.setFont('Times-Roman', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(x_title, y_top - 0.48*inch, submission['template_name'] + " - " + str(submission['count_date'].strftime("%a").upper()) + " for " + str((submission['count_date']+ timedelta(days=1)).strftime("%a").upper()) or '')
+
+        # Meta — right side
+        meta_x = PAGE_W - MARGIN - 2.5*inch
+        canvas.setFont('Times-Roman', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x, y_top - 0.22*inch, f"Count Date:")
+        canvas.setFont('Times-Bold', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x + 0.60*inch, y_top - 0.22*inch, count_date_str +", "+str(submission['count_date'].strftime("%a").upper()))
+
+        canvas.setFont('Times-Roman', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x, y_top - 0.37*inch, f"Submitted by:")
+        canvas.setFont('Times-Bold', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x + 0.70*inch, y_top - 0.37*inch, submitted_str)
+
+        canvas.setFont('Times-Roman', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x, y_top - 0.52*inch, "Status:")
+        canvas.setFont('Times-Bold', 8)
+        canvas.setFillColor(DARK)
+        canvas.drawString(meta_x + 0.40*inch, y_top - 0.52*inch, submission['status'].upper())
+
+        # Red rule
+        rule_y = y_top - HDR_H + 4
+        canvas.setStrokeColor(RED)
+        canvas.setLineWidth(1.5)
+        canvas.line(MARGIN, rule_y, PAGE_W - MARGIN, rule_y)
+
+        canvas.restoreState()
+
+    def draw_later(canvas, doc):
+        pass  # no header on subsequent pages
+
+    doc2 = BaseDocTemplate(
+        buf2,
+        pagesize=letter,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=MARGIN,  bottomMargin=MARGIN,
+    )
+
+    first_page  = PageTemplate(id='First', frames=first_frames(), onPage=draw_header)
+    later_pages = PageTemplate(id='Later', frames=later_frames(), onPage=draw_later)
+    doc2.addPageTemplates([first_page, later_pages])
+
+    from reportlab.platypus import NextPageTemplate, KeepTogether
+    full_story = [NextPageTemplate('Later')]
+    for section in sections:
+        tbl = build_section_table(section)
+        full_story.append(KeepTogether([tbl, Spacer(1, 6)]))
+
+    doc2.build(full_story)
+    buf2.seek(0)
+
+    from flask import send_file
+    filename = f"count-sheet-{submission_id}-{count_date_str}.pdf"
+    return send_file(
+        buf2,
+        mimetype='application/pdf',
+        as_attachment=False,
+        download_name=filename,
+    )
 
 
 @bp.route('/sheet-submissions/<int:submission_id>', methods=['PUT'])
@@ -1463,9 +1796,8 @@ def submit_sheet(submission_id):
                     'prod_ids': all_prod_ids,
                 }).mappings().all()
 
-                # Match conversions to each (base_unit, order_unit, product) combo in Python
+                # Match conversions — product-specific first, then global (product_id IS NULL)
                 for base_uid, order_uid, pid in conv_keys:
-                    # Look for product-specific first, then global
                     best = None
                     for row in conv_rows:
                         matches = (
@@ -1474,8 +1806,11 @@ def submit_sheet(submission_id):
                         )
                         if not matches:
                             continue
-                        if best is None or (row['product_id'] == pid and best['product_id'] is None):
+                        if row['product_id'] == pid:
                             best = row
+                            break  # exact product match — stop looking
+                        if row['product_id'] is None and best is None:
+                            best = row  # global fallback — keep looking for product-specific
                     if best:
                         if best['from_unit_id'] == base_uid:
                             factor = float(best['conversion'])
@@ -1525,7 +1860,7 @@ def submit_sheet(submission_id):
                 par_unit_id_snap = None
                 par_base_qty_snap = None
 
-                if par and par['par_qty']:
+                if par and par['par_qty'] is not None:
                     par_qty_snap     = par['par_qty']
                     par_unit_id_snap = par['par_unit_id']
                     if par['conversion']:
@@ -1586,19 +1921,20 @@ def submit_sheet(submission_id):
                 po_result = conn.execute(text("""
                     INSERT INTO purchase_orders (
                         location_id, order_date, expected_date, vendor_id,
-                        status, created_by, is_commissary
+                        status, created_by, is_commissary, sheet_submission_id
                     ) VALUES (
                         :location_id, :order_date, :expected_date, :vendor_id,
-                        'draft', :created_by, :is_commissary
+                        'open', :created_by, :is_commissary, :sheet_submission_id
                     )
                     RETURNING id
                 """), {
-                    'location_id':   sub['location_id'],
-                    'order_date':    sub['count_date'],
-                    'expected_date': expected_date,
-                    'vendor_id':     vid,
-                    'created_by':    g.user.get('email'),
-                    'is_commissary': is_comm,
+                    'location_id':        sub['location_id'],
+                    'order_date':         sub['count_date'],
+                    'expected_date':      expected_date,
+                    'vendor_id':          vid,
+                    'created_by':         g.user.get('email'),
+                    'is_commissary':      is_comm,
+                    'sheet_submission_id': submission_id,
                 })
                 po_id = po_result.fetchone().id
                 if is_comm:
@@ -1719,7 +2055,7 @@ def submit_sheet(submission_id):
             inv_submission_id = inv_sub_result.fetchone().id
 
             # ── BATCH: insert all inventory_counts ───────────────────────────
-            inv_rows = [e for e in entries if e['total_base_quantity']]
+            inv_rows = [e for e in entries if e['total_base_quantity'] is not None]
             if inv_rows:
                 conn.execute(text("""
                     INSERT INTO inventory_counts (
@@ -2066,6 +2402,334 @@ def list_purchase_orders():
     })
 
 
+@bp.route('/purchase-orders/<int:po_id>/pdf', methods=['GET'])
+@store_required
+def purchase_order_pdf(po_id):
+    """Generate a compact printable PDF of a purchase order with par data."""
+    import io
+    import os
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    )
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus.frames import Frame
+    from reportlab.platypus import BaseDocTemplate, PageTemplate, KeepTogether
+
+    with get_engine().connect() as conn:
+        po = conn.execute(text("""
+            SELECT
+                po.id, po.location_id, po.order_date, po.expected_date,
+                po.status, po.is_commissary, po.notes,
+                po.created_by, po.submitted_at,
+                po.shipped_at, po.shipped_by,
+                po.fulfilled_at, po.fulfilled_by,
+                po.sheet_submission_id,
+                v.name AS vendor_name,
+                l.location_name,
+                l.abbreviation
+            FROM purchase_orders po
+            JOIN vendors v       ON po.vendor_id       = v.id
+            LEFT JOIN locations l ON l.store_guid::text = po.location_id
+            WHERE po.id = :id
+        """), {'id': po_id}).mappings().fetchone()
+
+        if not po:
+            return jsonify({'error': 'Order not found'}), 404
+
+        # Get items with par snapshot from inventory_counts via sheet_submissions
+        items_raw = conn.execute(text("""
+            SELECT
+                poi.id,
+                poi.product_name,
+                poi.vendor_code,
+                poi.order_quantity,
+                poi.original_quantity,
+                poi.is_short,
+                poi.picked,
+                poi.received_status,
+                poi.received_note,
+                poi.edited_by,
+                poi.comm_section_id,
+                u.name  AS order_unit,
+                cs.name AS section_name,
+                cs.sort_order AS section_sort,
+                -- Par from inventory_counts snapshot
+                ic.par_qty,
+                pu.name  AS par_unit,
+                -- On hand: convert base_quantity back to order unit if possible
+                CASE
+                    WHEN uc.conversion IS NOT NULL AND uc.from_unit_id = ic.base_unit_id
+                        THEN ic.base_quantity * uc.conversion
+                    WHEN uc.conversion IS NOT NULL AND uc.to_unit_id = ic.base_unit_id
+                        THEN ic.base_quantity / uc.conversion
+                    ELSE ic.base_quantity
+                END AS on_hand_qty,
+                COALESCE(u.name, bu.name) AS on_hand_unit
+            FROM purchase_order_items poi
+            LEFT JOIN units u                ON poi.order_unit_id   = u.id
+            LEFT JOIN comm_order_sections cs ON poi.comm_section_id = cs.id
+            LEFT JOIN LATERAL (
+                SELECT ic2.par_qty, ic2.par_unit_id,
+                       ic2.base_quantity, ic2.base_unit_id
+                FROM inventory_counts ic2
+                JOIN inventory_submissions invs
+                    ON ic2.inventory_submission_id = invs.id
+                WHERE ic2.product_id = poi.product_id
+                AND (
+                    -- Direct match via sheet_submission_id
+                    (:sheet_submission_id IS NOT NULL AND invs.sheet_submission_id = :sheet_submission_id)
+                    OR
+                    -- Fallback: match by location + date for older orders
+                    (:sheet_submission_id IS NULL AND ic2.location_id = :location_id AND ic2.count_date = :order_date)
+                )
+                ORDER BY ic2.id DESC
+                LIMIT 1
+            ) ic ON TRUE
+            LEFT JOIN units pu ON ic.par_unit_id  = pu.id
+            LEFT JOIN units bu ON ic.base_unit_id = bu.id
+            LEFT JOIN LATERAL (
+                SELECT uc2.conversion, uc2.from_unit_id, uc2.to_unit_id
+                FROM unit_conversions uc2
+                WHERE (
+                    (uc2.from_unit_id = ic.base_unit_id AND uc2.to_unit_id = poi.order_unit_id)
+                    OR
+                    (uc2.to_unit_id = ic.base_unit_id AND uc2.from_unit_id = poi.order_unit_id)
+                )
+                AND (uc2.product_id = poi.product_id OR uc2.product_id IS NULL)
+                ORDER BY uc2.product_id NULLS LAST
+                LIMIT 1
+            ) uc ON TRUE
+            WHERE poi.purchase_order_id = :id
+            ORDER BY cs.sort_order NULLS LAST, cs.name NULLS LAST, poi.product_name
+        """), {
+            'id':                  po_id,
+            'sheet_submission_id': po['sheet_submission_id'],
+            'location_id':         po['location_id'],
+            'order_date':          po['order_date'],
+        }).mappings().all()
+
+        sections_raw = conn.execute(text("""
+            SELECT id, name, sort_order FROM comm_order_sections
+            WHERE purchase_order_id = :id ORDER BY sort_order
+        """), {'id': po_id}).mappings().all()
+
+    # Group by section
+    section_map  = {s['id']: {'name': s['name'], 'items': []} for s in sections_raw}
+    unsectioned  = []
+    for item in items_raw:
+        if item['comm_section_id'] and item['comm_section_id'] in section_map:
+            section_map[item['comm_section_id']]['items'].append(item)
+        else:
+            unsectioned.append(item)
+
+    sections = [section_map[s['id']] for s in sections_raw if section_map[s['id']]['items']]
+    if unsectioned:
+        sections.append({'name': 'Other', 'items': unsectioned})
+
+    # ── PDF layout ─────────────────────────────────────────────────────────────
+    buf2    = io.BytesIO()
+    PAGE_W, PAGE_H = letter
+    MARGIN  = 0.4 * inch
+    HDR_H   = 0.70 * inch
+    COL_W   = (PAGE_W - 2 * MARGIN - 6) / 2
+    COL_GAP = 6
+
+    RED   = colors.HexColor('#C0392B')
+    DARK  = colors.HexColor('#1a1a1a')
+    GREY  = colors.HexColor('#666666')
+    LGREY = colors.HexColor('#f2f2f2')
+    DGREY = colors.HexColor('#dddddd')
+    WHITE = colors.white
+    BLUE  = colors.HexColor('#2563eb')
+
+    def sty(name, **kw): return ParagraphStyle(name, **kw)
+    sec_hdr   = sty('S', fontSize=8,   fontName='Times-Bold',   textColor=WHITE,  leading=6)
+    sub_hdr   = sty('H', fontSize=7, fontName='Times-Bold',   textColor=DARK,   leading=7)
+    item_name = sty('I', fontSize=6,   fontName='Times-Roman',    textColor=DARK,   leading=5)
+    par_style = sty('P', fontSize=6,   fontName='Times-Roman',    textColor=GREY,   leading=5)
+    short_sty = sty('X', fontSize=6,   fontName='Times-Bold', textColor=RED,  leading=5)
+
+    # Col widths: Product | Status | Ordered | Par | On Hand | Status
+    ITEM_W = [COL_W * 0.35, COL_W * 0.15, COL_W * 0.10, COL_W * 0.10, COL_W * 0.13, COL_W * 0.17 ]
+
+    def build_section_table(section):
+        rows = []
+        rows.append([Paragraph(section['name'], sec_hdr), '', '', '', '',''])
+        rows.append([
+            Paragraph('Product',  sub_hdr),
+            Paragraph('Unit', sub_hdr),
+            Paragraph('O/H', sub_hdr),
+            Paragraph('Par', sub_hdr),
+            Paragraph('Ord',  sub_hdr),
+            Paragraph('Status', sub_hdr),
+
+        ])
+        for item in section['items']:
+            par_text = ''
+            if item['par_qty'] is not None:
+                par_text = f"{float(item['par_qty']):g}"
+
+            oh_text = ''
+            if item['on_hand_qty'] is not None:
+                oh_text = f"{float(item['on_hand_qty']):g}"
+
+            order_text = f"{float(item['order_quantity']):g}" if item['order_quantity'] is not None else ''
+
+
+            if (item['original_quantity'] is not None and
+                item['order_quantity'] is not None and
+                float(item['original_quantity']) != float(item['order_quantity'])):
+                order_text += f" (was {float(item['original_quantity']):g})"
+
+            status_text = ''
+            if item['is_short']:       status_text = 'SHORT'
+            if item['received_status']: status_text = item['received_status'].upper()
+
+            unit_text = ''
+            if item['par_qty'] is not None:
+                unit_text = f"{item['par_unit'] or ''}"
+
+            name_style = short_sty if item['is_short'] else item_name
+            rows.append([
+                Paragraph(item['product_name'], name_style),
+                Paragraph(unit_text, par_style),
+                Paragraph(oh_text,    par_style),
+                Paragraph(par_text, par_style),
+                Paragraph(order_text, par_style),
+                Paragraph(status_text, short_sty if item['is_short'] else par_style),
+
+            ])
+
+        row_count = len(rows)
+        t = Table(rows, colWidths=ITEM_W, repeatRows=2)
+        t.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (-1,0), RED),
+            ('TEXTCOLOR',     (0,0), (-1,0), WHITE),
+            ('SPAN',          (0,0), (-1,0)),
+            ('FONTNAME',      (0,0), (-1,0), 'Times-Bold'),
+            ('FONTSIZE',      (0,0), (-1,0), 4),
+            ('TOPPADDING',    (0,0), (-1,0), 0),
+            ('BOTTOMPADDING', (0,0), (-1,0), 3),
+            ('LEFTPADDING',   (0,0), (-1,0), 3),
+            ('BACKGROUND',    (0,1), (-1,1), LGREY),
+            ('TOPPADDING',    (0,1), (-1,1), 3),
+            ('BOTTOMPADDING', (0,1), (-1,1), 3),
+            ('FONTSIZE',      (0,2), (-1,-1), 4),
+            ('TOPPADDING',    (0,2), (-1,-1), 1),
+            ('BOTTOMPADDING', (0,2), (-1,-1), 5),
+            ('LEFTPADDING',   (0,0), (-1,-1), 2),
+            ('RIGHTPADDING',  (0,0), (-1,-1), 2),
+            ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+            *[('BACKGROUND',  (0,i), (-1,i), LGREY if i % 2 == 0 else WHITE)
+              for i in range(2, row_count)],
+            ('LINEBELOW',     (0,1), (-1,-1), 0.25, DGREY),
+            ('BOX',           (0,0), (-1,-1), 0.5, DGREY),
+        ]))
+        return t
+
+    story = []
+    for section in sections:
+        story.append(build_section_table(section))
+        story.append(Spacer(1, 4))
+
+    # ── Canvas header ──────────────────────────────────────────────────────────
+    logo_path   = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'logo.png')
+    order_date  = str(po['order_date'])[:10] if po['order_date'] else '—'
+    status_str  = po['status'].upper()
+
+    def draw_header(canvas, doc):
+        canvas.saveState()
+        y_top = PAGE_H - MARGIN * 0.6
+
+        if os.path.exists(logo_path):
+            canvas.drawImage(logo_path, MARGIN, y_top - 0.5*inch,
+                             width=1.0*inch, height=0.4*inch,
+                             preserveAspectRatio=True, mask='auto')
+            x_title = MARGIN + 1.1*inch
+        else:
+            canvas.setFont('Helvetica-Bold', 9)
+            canvas.setFillColor(RED)
+            canvas.drawString(MARGIN, y_top - 0.25*inch, "Anita's New Mexico")
+            x_title = MARGIN + 1.4*inch
+
+        canvas.setFillColor(DARK)
+        canvas.setFont('Helvetica-Bold', 14)
+        canvas.drawString(x_title, y_top - 0.28*inch, po['location_name'] or '')
+        canvas.setFont('Helvetica', 7.5)
+        canvas.setFillColor(GREY)
+        canvas.drawString(x_title, y_top - 0.44*inch, f"{po['vendor_name']} · {po['is_commissary'] and 'Commissary' or 'Purchase'}")
+
+        # Right side meta
+        meta_x = PAGE_W - MARGIN - 2.2*inch
+        lines = [
+            ('Order Date', order_date),
+            ('Status',     status_str),
+            ('Created by', (po['created_by'] or '').split('@')[0]),
+        ]
+        if po['shipped_at']:
+            lines.append(('Shipped', f"{str(po['shipped_at'])[:10]} · {(po['shipped_by'] or '').split('@')[0]}"))
+        if po['fulfilled_at']:
+            lines.append(('Fulfilled', f"{str(po['fulfilled_at'])[:10]} · {(po['fulfilled_by'] or '').split('@')[0]}"))
+        if po['notes']:
+            lines.append(('Notes', po['notes']))
+
+        y = y_top - 0.15*inch
+        for label, val in lines:
+            canvas.setFont('Helvetica', 6.5)
+            canvas.setFillColor(GREY)
+            canvas.drawString(meta_x, y, f"{label}:")
+            canvas.setFont('Helvetica-Bold', 6.5)
+            canvas.setFillColor(DARK)
+            canvas.drawString(meta_x + 0.65*inch, y, str(val))
+            y -= 0.11*inch
+
+        canvas.setStrokeColor(RED)
+        canvas.setLineWidth(1.5)
+        canvas.line(MARGIN, y_top - HDR_H + 4, PAGE_W - MARGIN, y_top - HDR_H + 4)
+        canvas.restoreState()
+
+    def draw_later(canvas, doc): pass
+
+    doc2 = BaseDocTemplate(buf2, pagesize=letter,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=MARGIN,  bottomMargin=MARGIN)
+
+    def first_frames():
+        body_h = PAGE_H - 2*MARGIN - HDR_H - 8
+        return [
+            Frame(MARGIN, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='left'),
+            Frame(MARGIN + COL_W + COL_GAP, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='right'),
+        ]
+
+    def later_frames():
+        body_h = PAGE_H - 2*MARGIN
+        return [
+            Frame(MARGIN, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='left'),
+            Frame(MARGIN + COL_W + COL_GAP, MARGIN, COL_W, body_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id='right'),
+        ]
+
+    from reportlab.platypus import NextPageTemplate
+    doc2.addPageTemplates([
+        PageTemplate(id='First', frames=first_frames(), onPage=draw_header),
+        PageTemplate(id='Later', frames=later_frames(), onPage=draw_later),
+    ])
+
+    full_story = [NextPageTemplate('Later')] + story
+    doc2.build(full_story)
+    buf2.seek(0)
+
+    from flask import send_file
+    filename = f"order-{po_id}-{po['vendor_name']}-{order_date}.pdf".replace(' ', '-')
+    return send_file(buf2, mimetype='application/pdf', as_attachment=False, download_name=filename)
+
+
 @bp.route('/purchase-orders/<int:po_id>', methods=['GET'])
 @staff_required
 def get_purchase_order(po_id):
@@ -2075,7 +2739,10 @@ def get_purchase_order(po_id):
             SELECT
                 po.id, po.location_id, po.order_date, po.expected_date,
                 po.status, po.is_commissary, po.notes,
-                po.created_by, po.submitted_at, po.received_at,
+                po.created_by, po.submitted_at,
+                po.shipped_at, po.shipped_by,
+                po.fulfilled_at, po.fulfilled_by,
+                po.sheet_submission_id,
                 po.created_at, po.updated_at,
                 v.id   AS vendor_id,
                 v.name AS vendor_name,
@@ -2101,6 +2768,11 @@ def get_purchase_order(po_id):
                 poi.base_quantity,
                 poi.base_unit_id,
                 poi.is_short,
+                poi.picked,
+                poi.received_status,
+                poi.received_note,
+                poi.received_by,
+                poi.received_at,
                 poi.edited_by,
                 poi.edited_at,
                 poi.notes,
@@ -2148,26 +2820,34 @@ def delete_purchase_order(po_id):
 @bp.route('/purchase-orders/<int:po_id>', methods=['PUT'])
 @manage_required
 def update_purchase_order(po_id):
-    """Update order status or notes."""
+    """Update order status, notes, or expected_date."""
     data = request.get_json(force=True)
+    new_status = data.get('status')
     try:
         with get_engine().begin() as conn:
             conn.execute(text("""
                 UPDATE purchase_orders SET
                     status        = COALESCE(:status, status),
-                    notes         = :notes,
+                    notes         = COALESCE(:notes, notes),
                     expected_date = COALESCE(:expected_date, expected_date),
                     submitted_at  = CASE WHEN :status = 'submitted' AND submitted_at IS NULL
                                          THEN NOW() ELSE submitted_at END,
-                    received_at   = CASE WHEN :status = 'received' AND received_at IS NULL
-                                         THEN NOW() ELSE received_at END,
+                    shipped_at    = CASE WHEN :status = 'shipped' AND shipped_at IS NULL
+                                         THEN NOW() ELSE shipped_at END,
+                    shipped_by    = CASE WHEN :status = 'shipped' AND shipped_by IS NULL
+                                         THEN :by ELSE shipped_by END,
+                    fulfilled_at  = CASE WHEN :status = 'fulfilled' AND fulfilled_at IS NULL
+                                         THEN NOW() ELSE fulfilled_at END,
+                    fulfilled_by  = CASE WHEN :status = 'fulfilled' AND fulfilled_by IS NULL
+                                         THEN :by ELSE fulfilled_by END,
                     updated_at    = NOW()
                 WHERE id = :id
             """), {
                 'id':            po_id,
-                'status':        data.get('status'),
+                'status':        new_status,
                 'notes':         data.get('notes'),
                 'expected_date': data.get('expected_date'),
+                'by':            g.user.get('email'),
             })
         return jsonify({'status': 'ok'})
     except Exception as e:
@@ -2203,7 +2883,7 @@ def add_order_item(po_id):
 
             if not po:
                 return jsonify({'error': 'Order not found'}), 404
-            if po.status != 'draft':
+            if po.status != 'accepted':
                 return jsonify({'error': 'Can only add items to draft orders'}), 400
 
             # Resolve vendor item
@@ -2362,28 +3042,47 @@ def add_order_item(po_id):
 
 
 @bp.route('/purchase-order-items/<int:item_id>', methods=['PUT'])
-@comm_item_edit_required
+@comm_item_edit_required  # allows admin, gm, comm_gm, commissary — plus store checked inside
 def update_order_item(item_id):
     """
-    Update a line item.
-    - Admin/GM/Commissary GM: can edit quantity, vendor_code, notes, is_short
-    - Commissary: can only edit order_quantity and is_short (not vendor_code/notes)
+    Update a line item. Permission depends on order status:
+    - open: store/gm/admin can edit qty
+    - accepted: comm/comm_gm/admin can edit qty, short, picked
+    - admin: always
     """
     data    = request.get_json(force=True)
     new_qty = data.get('order_quantity')
+    roles   = g.user.get('roles', [])
+    is_admin    = 'admin' in roles
     is_comm_only = _has_role(COMMISSARY) and not _has_role(ADMIN, GM, COMM_GM)
 
     try:
         with get_engine().begin() as conn:
+            # Get item + order status for permission check
             current = conn.execute(text("""
                 SELECT poi.order_quantity, poi.order_unit_id, poi.base_unit_id,
-                       poi.product_id
+                       poi.product_id, po.status
                 FROM purchase_order_items poi
+                JOIN purchase_orders po ON poi.purchase_order_id = po.id
                 WHERE poi.id = :id
             """), {'id': item_id}).fetchone()
 
             if not current:
                 return jsonify({'error': 'Item not found'}), 404
+
+            # Status-based permission check
+            if not is_admin:
+                status = current.status
+                if status == 'open':
+                    # Store/GM can edit when open
+                    if not any(r in roles for r in ['store', 'gm', 'admin']):
+                        return jsonify({'error': 'Not authorized'}), 403
+                elif status == 'accepted':
+                    # Comm/comm_gm can edit when accepted
+                    if not any(r in roles for r in ['commissary', 'commissary_gm', 'admin']):
+                        return jsonify({'error': 'Not authorized'}), 403
+                else:
+                    return jsonify({'error': 'Order is locked'}), 403
 
             # Recalculate base_quantity if qty is changing
             new_base_qty = None
@@ -2413,28 +3112,30 @@ def update_order_item(item_id):
 
             conn.execute(text("""
                 UPDATE purchase_order_items SET
-                    order_quantity = COALESCE(:order_quantity, order_quantity),
-                    base_quantity  = CASE WHEN :new_base_qty IS NOT NULL
-                                         THEN :new_base_qty ELSE base_quantity END,
-                    is_short       = COALESCE(:is_short, is_short),
-                    notes          = CASE WHEN :comm_only THEN notes
-                                         ELSE COALESCE(:notes, notes) END,
-                    vendor_code    = CASE WHEN :comm_only THEN vendor_code
-                                         ELSE COALESCE(:vendor_code, vendor_code) END,
-                    edited_by      = CASE
-                                        WHEN :order_quantity IS NOT NULL
-                                         AND :order_quantity != order_quantity
-                                        THEN :edited_by ELSE edited_by END,
-                    edited_at      = CASE
-                                        WHEN :order_quantity IS NOT NULL
-                                         AND :order_quantity != order_quantity
-                                        THEN NOW() ELSE edited_at END
+                    order_quantity  = COALESCE(:order_quantity, order_quantity),
+                    base_quantity   = CASE WHEN :new_base_qty IS NOT NULL
+                                          THEN :new_base_qty ELSE base_quantity END,
+                    is_short        = COALESCE(:is_short, is_short),
+                    picked          = COALESCE(:picked, picked),
+                    notes           = CASE WHEN :comm_only THEN notes
+                                          ELSE COALESCE(:notes, notes) END,
+                    vendor_code     = CASE WHEN :comm_only THEN vendor_code
+                                          ELSE COALESCE(:vendor_code, vendor_code) END,
+                    edited_by       = CASE
+                                         WHEN :order_quantity IS NOT NULL
+                                          AND :order_quantity != order_quantity
+                                         THEN :edited_by ELSE edited_by END,
+                    edited_at       = CASE
+                                         WHEN :order_quantity IS NOT NULL
+                                          AND :order_quantity != order_quantity
+                                         THEN NOW() ELSE edited_at END
                 WHERE id = :id
             """), {
                 'id':             item_id,
                 'order_quantity': float(new_qty) if new_qty is not None else None,
                 'new_base_qty':   new_base_qty,
                 'is_short':       data.get('is_short'),
+                'picked':         data.get('picked'),
                 'notes':          data.get('notes'),
                 'vendor_code':    data.get('vendor_code'),
                 'edited_by':      g.user.get('email'),
@@ -2445,80 +3146,120 @@ def update_order_item(item_id):
         logger.error(f'update_order_item: {e}')
         return jsonify({'error': str(e)}), 500
 
+
+@bp.route('/purchase-order-items/<int:item_id>/receive', methods=['PUT'])
+@store_required
+def receive_order_item(item_id):
+    """Store staff marks an item as received or returned with optional note."""
+    data = request.get_json(force=True)
+    status = data.get('received_status')  # 'received' or 'returned'
+    note   = data.get('received_note')
+
+    if status not in ('received', 'returned', None):
+        return jsonify({'error': 'Invalid received_status'}), 400
+
     try:
         with get_engine().begin() as conn:
-            # Get current item to find unit conversion
-            current = conn.execute(text("""
-                SELECT poi.order_quantity, poi.order_unit_id, poi.base_unit_id,
-                       poi.product_id
-                FROM purchase_order_items poi
-                WHERE poi.id = :id
-            """), {'id': item_id}).fetchone()
-
-            if not current:
-                return jsonify({'error': 'Item not found'}), 404
-
-            # Recalculate base_quantity if qty is changing
-            new_base_qty = None
-            if new_qty is not None and current.order_unit_id and current.base_unit_id:
-                conv = conn.execute(text("""
-                    SELECT conversion, from_unit_id, to_unit_id
-                    FROM unit_conversions
-                    WHERE (
-                        (from_unit_id = :order_unit_id AND to_unit_id = :base_unit_id)
-                        OR
-                        (from_unit_id = :base_unit_id  AND to_unit_id = :order_unit_id)
-                    )
-                    AND (product_id = :product_id OR product_id IS NULL)
-                    ORDER BY product_id NULLS LAST,
-                             CASE WHEN from_unit_id = :order_unit_id THEN 0 ELSE 1 END
-                    LIMIT 1
-                """), {
-                    'order_unit_id': current.order_unit_id,
-                    'base_unit_id':  current.base_unit_id,
-                    'product_id':    current.product_id,
-                }).fetchone()
-
-                if conv:
-                    if conv.from_unit_id == current.order_unit_id:
-                        # order unit → base unit directly
-                        factor = float(conv.conversion)
-                    else:
-                        # inverse: base → order, so invert
-                        factor = 1.0 / float(conv.conversion)
-                    new_base_qty = float(new_qty) * factor
-
             conn.execute(text("""
                 UPDATE purchase_order_items SET
-                    order_quantity = COALESCE(:order_quantity, order_quantity),
-                    base_quantity  = CASE
-                                        WHEN :new_base_qty IS NOT NULL THEN :new_base_qty
-                                        ELSE base_quantity
-                                     END,
-                    notes          = COALESCE(:notes, notes),
-                    vendor_code    = COALESCE(:vendor_code, vendor_code),
-                    edited_by      = CASE
-                                        WHEN :order_quantity IS NOT NULL
-                                         AND :order_quantity != order_quantity
-                                        THEN :edited_by ELSE edited_by
-                                     END,
-                    edited_at      = CASE
-                                        WHEN :order_quantity IS NOT NULL
-                                         AND :order_quantity != order_quantity
-                                        THEN NOW() ELSE edited_at
-                                     END
+                    received_status = COALESCE(:status, received_status),
+                    received_note   = :note,
+                    received_by     = :received_by,
+                    received_at     = NOW()
                 WHERE id = :id
             """), {
-                'id':             item_id,
-                'order_quantity': float(new_qty) if new_qty is not None else None,
-                'new_base_qty':   new_base_qty,
-                'notes':          data.get('notes'),
-                'vendor_code':    data.get('vendor_code'),
-                'edited_by':      g.user.get('email'),
+                'id':          item_id,
+                'status':      status,
+                'note':        note,
+                'received_by': g.user.get('email'),
             })
         return jsonify({'status': 'ok'})
     except Exception as e:
-        logger.error(f'update_order_item: {e}')
+        logger.error(f'receive_order_item: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/purchase-orders/<int:po_id>/accept', methods=['POST'])
+@comm_manage_required
+def accept_order(po_id):
+    """Accept order — commissary GM or admin locks it for picking."""
+    try:
+        with get_engine().begin() as conn:
+            po = conn.execute(text(
+                "SELECT status FROM purchase_orders WHERE id = :id"
+            ), {'id': po_id}).fetchone()
+            if not po:
+                return jsonify({'error': 'Order not found'}), 404
+            if po.status != 'open':
+                return jsonify({'error': f'Cannot accept order in {po.status} status'}), 400
+            conn.execute(text("""
+                UPDATE purchase_orders SET
+                    status     = 'accepted',
+                    updated_at = NOW()
+                WHERE id = :id
+            """), {'id': po_id})
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logger.error(f'accept_order: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/purchase-orders/<int:po_id>/ship', methods=['POST'])
+@comm_manage_required
+def ship_order(po_id):
+    """Mark order as shipped — commissary GM or admin only."""
+    try:
+        with get_engine().begin() as conn:
+            po = conn.execute(text(
+                "SELECT status FROM purchase_orders WHERE id = :id"
+            ), {'id': po_id}).fetchone()
+            if not po:
+                return jsonify({'error': 'Order not found'}), 404
+            if po.status != 'accepted':
+                return jsonify({'error': f'Cannot ship order in {po.status} status'}), 400
+
+            conn.execute(text("""
+                UPDATE purchase_orders SET
+                    status     = 'shipped',
+                    shipped_at = NOW(),
+                    shipped_by = :by,
+                    updated_at = NOW()
+                WHERE id = :id
+            """), {'id': po_id, 'by': g.user.get('email')})
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logger.error(f'ship_order: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/purchase-orders/<int:po_id>/fulfill', methods=['POST'])
+@store_required
+def fulfill_order(po_id):
+    """Store marks order as fulfilled after receiving."""
+    data = request.get_json(force=True) or {}
+    note = data.get('notes')
+    try:
+        with get_engine().begin() as conn:
+            po = conn.execute(text(
+                "SELECT status FROM purchase_orders WHERE id = :id"
+            ), {'id': po_id}).fetchone()
+            if not po:
+                return jsonify({'error': 'Order not found'}), 404
+            if po.status != 'shipped':
+                return jsonify({'error': f'Cannot fulfill order in {po.status} status'}), 400
+
+            conn.execute(text("""
+                UPDATE purchase_orders SET
+                    status       = 'fulfilled',
+                    fulfilled_at = NOW(),
+                    fulfilled_by = :by,
+                    notes        = COALESCE(:notes, notes),
+                    updated_at   = NOW()
+                WHERE id = :id
+            """), {'id': po_id, 'by': g.user.get('email'), 'notes': note})
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logger.error(f'fulfill_order: {e}')
         return jsonify({'error': str(e)}), 500
 
 

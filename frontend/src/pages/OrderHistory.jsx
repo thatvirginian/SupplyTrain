@@ -6,9 +6,11 @@ import './catalog.css'
 import './order-history.css'
 
 const STATUS_BADGE = {
-  draft:      'badge-warning',
+  open:       'badge-warning',
+  accepted:   'badge-info',
   submitted:  'badge-info',
-  received:   'badge-success',
+  shipped:    'badge-info',
+  fulfilled:  'badge-success',
   cancelled:  'badge-error',
 }
 
@@ -97,9 +99,10 @@ export default function OrderHistory() {
         <select className="input filter-select" value={status}
           onChange={e => setStatus(e.target.value)}>
           <option value="">All Statuses</option>
-          <option value="draft">Draft</option>
-          <option value="submitted">Submitted</option>
-          <option value="received">Received</option>
+          <option value="open">Open</option>
+          <option value="accepted">Accepted</option>
+          <option value="shipped">Shipped</option>
+          <option value="fulfilled">Fulfilled</option>
           <option value="cancelled">Cancelled</option>
         </select>
 

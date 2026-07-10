@@ -64,9 +64,10 @@ export default function ParLevels() {
     setLoading(true)
     setError(null)
     try {
-      const params = { page, per_page: PER_PAGE }
+      const params = { page, per_page: PER_PAGE, location_id: locationId }
       if (debouncedSearch) params.search      = debouncedSearch
       if (categoryId)      params.category_id = categoryId
+      if (vendorId)        params.vendor_id   = vendorId
       const res = await axios.get('/api/products', { params })
       setProducts(res.data.products || [])
       setTotal(res.data.total || 0)
@@ -75,7 +76,7 @@ export default function ParLevels() {
     } finally {
       setLoading(false)
     }
-  }, [locationId, debouncedSearch, categoryId, page])
+  }, [locationId, debouncedSearch, categoryId, vendorId, page])
 
   const fetchParLevels = useCallback(async () => {
     if (!locationId) return
@@ -89,10 +90,6 @@ export default function ParLevels() {
     }
   }, [locationId, vendorId])
 
-  // When vendor filter active, only show products that have par levels from that vendor
-  const filteredProducts = vendorId
-    ? products.filter(p => parLevels.some(pl => pl.product_id === p.id))
-    : products
   useEffect(() => { fetchStatic() }, [fetchStatic])
   useEffect(() => { setPage(1) }, [locationId, debouncedSearch, categoryId, vendorId])
   useEffect(() => { fetchProducts() }, [fetchProducts])
@@ -218,13 +215,13 @@ export default function ParLevels() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {locationId && !loading && filteredProducts.length === 0 && (
+      {locationId && !loading && products.length === 0 && (
         <div className="card" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
           No products found.
         </div>
       )}
 
-      {locationId && filteredProducts.length > 0 && (
+      {locationId && products.length > 0 && (
         <>
           <div className="par-table-wrap">
           <table className="par-table">
@@ -237,7 +234,7 @@ export default function ParLevels() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map(product => (
+              {products.map(product => (
                 <tr key={product.id}>
                   <td className="par-product-cell">
                     <span className="par-product-name">{product.name}</span>

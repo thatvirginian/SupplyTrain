@@ -174,8 +174,7 @@ export default function CountSheetHome() {
               <div key={s.id} className="inv-submission-card"
                 onClick={() => navigate(`/count-sheet/${s.id}`)}>
                 <div className="inv-submission-info">
-                  <span className="inv-template-name">{s.template_name}</span>
-                  <span className="inv-template-name"> </span>
+                  <span className="inv-template-name">{s.template_name} {s.count_date ?new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(new Date(s.count_date + 'T00:00:00')).toUpperCase(): ''} for {s.count_date ?new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(new Date(s.count_date + 'T00:00:00').getTime() + 86400000).toUpperCase(): ''} </span>
                   <span className="inv-template-meta">
                     {formatDate(s.count_date)} · {s.location_name}
                   </span>

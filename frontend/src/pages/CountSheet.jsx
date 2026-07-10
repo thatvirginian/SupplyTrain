@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { useAuth } from '../App.jsx'
-import { toDateInputValue } from '../utils/dateUtils.js'
 import { NumericInput } from '../components/NumericInput.jsx'
+import { toDateInputValue } from '../utils/dateUtils.js'
 import './count-sheet.css'
 
 export default function CountSheet() {
@@ -21,6 +21,17 @@ export default function CountSheet() {
 
   // entries: { `${product_id}_${unit_id}`: quantity }
   const [entries, setEntries] = useState({})
+
+  // Collapsible sections
+  const [collapsedSections, setCollapsedSections] = useState(new Set())
+
+  const toggleSection = (sectionId) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev)
+      next.has(sectionId) ? next.delete(sectionId) : next.add(sectionId)
+      return next
+    })
+  }
 
   // Expected delivery date — defaults to count date + 1 day
   const [expectedDate, setExpectedDate] = useState('')
@@ -75,6 +86,28 @@ export default function CountSheet() {
     const key = `${productId}_${unitId}`
     setEntries(e => ({ ...e, [key]: value }))
     touchedRef.current.add(key)
+  }
+
+  // ── Paste cascade — paste a column from Excel and fill down ────────────────
+  const handlePaste = (e, productId, unitId) => {
+    const text = e.clipboardData.getData('text')
+    const values = text.split(/\r\n|\r|\n|\t/).map(v => v.trim()).filter(v => v !== '')
+    if (values.length <= 1) return
+    e.preventDefault()
+    const inputs = Array.from(document.querySelectorAll('.sheet-count-input'))
+    const startKey = `${productId}_${unitId}`
+    const startIdx = inputs.findIndex(el => el.dataset.key === startKey)
+    if (startIdx === -1) return
+    const newEntries = {}
+    values.forEach((val, i) => {
+      const input = inputs[startIdx + i]
+      if (!input) return
+      const key = input.dataset.key
+      if (!key || !/^-?\d*\.?\d*$/.test(val)) return
+      newEntries[key] = val
+      touchedRef.current.add(key)
+    })
+    setEntries(prev => ({ ...prev, ...newEntries }))
   }
 
   // ── Order quantity calculation ─────────────────────────────────────────────
@@ -175,7 +208,13 @@ export default function CountSheet() {
         <div className="sheet-header-left">
           <button className="sheet-back" onClick={() => navigate(-1)}>←</button>
           <div>
-            <div className="sheet-title">{submission.template_name}</div>
+            <div className="sheet-title">
+              {submission.template_name} · {submission.count_date
+                ? new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(new Date(submission.count_date + 'T00:00:00')).toUpperCase()
+                : ''} for {expectedDate
+                ? new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(new Date(expectedDate + 'T00:00:00')).toUpperCase()
+                : ''}
+            </div>
             <div className="sheet-meta">
               {submission.location_name} · {submission.count_date}
               {isSubmitted && <span className="sheet-submitted-badge">Submitted</span>}
@@ -204,6 +243,10 @@ export default function CountSheet() {
               onClick={handleSubmit} disabled={submitting || saving}>
               {submitting ? 'Submitting...' : 'Submit'}
             </button>
+            <button className="sheet-btn sheet-btn-secondary"
+              onClick={() => window.open(`/api/sheet-submissions/${submissionId}/pdf`, '_blank')}>
+              Print PDF
+            </button>
             <button
               className="sheet-btn sheet-btn-secondary"
               style={{ color: 'var(--error)', borderColor: 'var(--error)' }}
@@ -230,16 +273,36 @@ export default function CountSheet() {
 
       {/* ── Sections ── */}
         <div className="sheet-body">
-          {submission.sections?.map(section => (
-            <div key={section.id} className="sheet-section">
-              <div className="sheet-section-title">{section.name}</div>
+          {submission.sections?.map(section => {
+            const isCollapsed  = collapsedSections.has(section.id)
+            const filledCount  = section.items?.filter(item =>
+              item.count_units?.some(cu => {
+                const v = entries[`${item.product_id}_${cu.unit_id}`]
+                return v !== undefined && v !== ''
+              })
+            ).length || 0
+            const totalCount = section.items?.length || 0
 
-              {section.items?.map(item => {
+            return (
+            <div key={section.id} className="sheet-section">
+              <div className="sheet-section-title"
+                style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                onClick={() => toggleSection(section.id)}>
+                <span>{section.name}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.65rem', opacity: 0.7, fontWeight: 400 }}>
+                    {filledCount}/{totalCount}
+                  </span>
+                  <span style={{ fontSize: '0.65rem' }}>{isCollapsed ? '▶' : '▼'}</span>
+                </span>
+              </div>
+
+              {!isCollapsed && section.items?.map(item => {
                 const order = getOrderQty(item)
                 return (
                   <div key={item.item_id} className="sheet-item">
 
-                    {/* NEW: Item Header containing Name, Par, and Order Summary */}
+                    {/* Item Header containing Name, Par, and Order Summary */}
                     <div className="sheet-item-header">
                       <div className="sheet-item-name">{item.product_name}</div>
 
@@ -267,7 +330,6 @@ export default function CountSheet() {
                       </div>
                     </div>
 
-                    {/* Streamlined Count Rows: Only inputs and units now */}
                     {item.count_units?.map((cu) => {
                       const key = `${item.product_id}_${cu.unit_id}`
                       const qty = entries[key] ?? ''
@@ -282,7 +344,9 @@ export default function CountSheet() {
                               placeholder="0"
                               value={qty}
                               disabled={isSubmitted}
+                              data-key={key}
                               onChange={e => handleChange(item.product_id, cu.unit_id, e.target.value)}
+                              onPaste={e => handlePaste(e, item.product_id, cu.unit_id)}
                             />
                           </div>
                         </div>
@@ -293,7 +357,8 @@ export default function CountSheet() {
                 )
               })}
             </div>
-          ))}
+            )
+          })}
         </div>
 
 
