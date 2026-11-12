@@ -145,9 +145,11 @@ def any_role_required(f):
 
 def _get_user_location(conn):
     """Get location_id for staff user from locations.contact_email."""
-    email = g.user.get('email', '')
+    email = (g.user.get('email') or '').strip().lower()
+    if not email:
+        return None
     row = conn.execute(text("""
-        SELECT store_guid FROM locations WHERE contact_email = :email
+        SELECT store_guid FROM locations WHERE LOWER(TRIM(contact_email)) = :email LIMIT 1
     """), {'email': email}).fetchone()
     return str(row.store_guid) if row else None
 
@@ -164,10 +166,10 @@ def gm_or_admin_required(f):
 
 def get_user_location_or_raise(conn):
     """Like _get_user_location, but raises ValueError when the user has no location (used by inventory)."""
-    email = g.user.get('email', '')
+    email = (g.user.get('email') or '').strip().lower()
     row = conn.execute(text("""
-        SELECT store_guid::text FROM locations WHERE contact_email = :email LIMIT 1
-    """), {'email': email}).fetchone()
+        SELECT store_guid::text FROM locations WHERE LOWER(TRIM(contact_email)) = :email LIMIT 1
+    """), {'email': email}).fetchone() if email else None
     if row:
         return row.store_guid
     raise ValueError('Could not determine location')
