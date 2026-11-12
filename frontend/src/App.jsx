@@ -1,31 +1,28 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
-import Layout from './components/Layout.jsx'
-import ProductCatalog from './pages/ProductCatalog.jsx'
-import ProductDetail from './pages/ProductDetail.jsx'
-import ToastMapping from './pages/ToastMapping.jsx'
-import OrderHistory from './pages/OrderHistory.jsx'
-import OrderDetail from './pages/OrderDetail.jsx'
-import Dashboard from './pages/Dashboard.jsx'
-import VendorItems from './pages/VendorItems.jsx'
-import SheetTemplates      from './pages/SheetTemplates.jsx'
-import SheetTemplateDetail from './pages/SheetTemplateDetail.jsx'
-import CountSheetHome from './pages/CountSheetHome.jsx'
-import CountSheet     from './pages/CountSheet.jsx'
-import ParLevels from './pages/ParLevels.jsx'
-import CommOrderTemplates      from './pages/CommOrderTemplates.jsx'
-import CommOrderTemplateDetail from './pages/CommOrderTemplateDetail.jsx'
-import InventoryHome           from './pages/InventoryHome.jsx'
-import InventoryHistory        from './pages/InventoryHistory.jsx'
-import InventoryDetail         from './pages/InventoryDetail.jsx'
-import InventorySheet          from './pages/InventorySheet.jsx'
-import InventoryTemplates      from './pages/InventoryTemplates.jsx'
-import InventoryTemplateDetail from './pages/InventoryTemplateDetail.jsx'
-
-// ── Auth Context ──────────────────────────────────────────────────────────────
-export const AuthContext = createContext(null)
-export const useAuth = () => useContext(AuthContext)
+import { AuthContext } from './core/auth/AuthContext.js'
+import Layout from './core/layout/Layout.jsx'
+import ProductListPage from './features/catalog/pages/ProductListPage.jsx'
+import ProductDetailPage from './features/catalog/pages/ProductDetailPage.jsx'
+import ToastMappingPage from './features/toast_mapping/pages/ToastMappingPage.jsx'
+import PurchaseOrderHistoryPage from './features/purchase_orders/pages/PurchaseOrderHistoryPage.jsx'
+import PurchaseOrderDetailPage from './features/purchase_orders/pages/PurchaseOrderDetailPage.jsx'
+import DashboardPage from './features/dashboard/pages/DashboardPage.jsx'
+import VendorItemsPage from './features/catalog/pages/VendorItemsPage.jsx'
+import OrderTemplateListPage      from './features/order_sheets/pages/OrderTemplateListPage.jsx'
+import OrderTemplateDetailPage from './features/order_sheets/pages/OrderTemplateDetailPage.jsx'
+import OrderSheetHomePage from './features/order_sheets/pages/OrderSheetHomePage.jsx'
+import OrderSheetPage     from './features/order_sheets/pages/OrderSheetPage.jsx'
+import ParLevelsPage from './features/par_levels/pages/ParLevelsPage.jsx'
+import CommissaryTemplateListPage      from './features/commissary/pages/CommissaryTemplateListPage.jsx'
+import CommissaryTemplateDetailPage from './features/commissary/pages/CommissaryTemplateDetailPage.jsx'
+import InventoryHomePage           from './features/inventory/pages/InventoryHomePage.jsx'
+import InventoryHistoryPage        from './features/inventory/pages/InventoryHistoryPage.jsx'
+import InventoryDetailPage         from './features/inventory/pages/InventoryDetailPage.jsx'
+import InventoryCountSheetPage          from './features/inventory/pages/InventoryCountSheetPage.jsx'
+import InventoryTemplateListPage      from './features/inventory/pages/InventoryTemplateListPage.jsx'
+import InventoryTemplateDetailPage from './features/inventory/pages/InventoryTemplateDetailPage.jsx'
 
 function App() {
   const [user, setUser]     = useState(null)
@@ -108,34 +105,34 @@ function App() {
 
             {/* Admin only routes */}
             {isAdmin && <>
-              <Route path="dashboard"                        element={<Dashboard />} />
-              <Route path="products"                         element={<ProductCatalog />} />
-              <Route path="products/:id"                     element={<ProductDetail />} />
-              <Route path="mapping"                          element={<ToastMapping />} />
-              <Route path="vendor-items"                     element={<VendorItems />} />
-              <Route path="sheet-templates"                  element={<SheetTemplates />} />
-              <Route path="sheet-templates/:id"              element={<SheetTemplateDetail />} />
-              <Route path="par-levels"                       element={<ParLevels />} />
-              <Route path="comm-order-templates"             element={<CommOrderTemplates />} />
-              <Route path="comm-order-templates/:id"         element={<CommOrderTemplateDetail />} />
-              <Route path="inventory-templates"      element={<InventoryTemplates />} />
-              <Route path="inventory-templates/:id"  element={<InventoryTemplateDetail />} />
+              <Route path="dashboard"                        element={<DashboardPage />} />
+              <Route path="products"                         element={<ProductListPage />} />
+              <Route path="products/:id"                     element={<ProductDetailPage />} />
+              <Route path="mapping"                          element={<ToastMappingPage />} />
+              <Route path="vendor-items"                     element={<VendorItemsPage />} />
+              <Route path="sheet-templates"                  element={<OrderTemplateListPage />} />
+              <Route path="sheet-templates/:id"              element={<OrderTemplateDetailPage />} />
+              <Route path="par-levels"                       element={<ParLevelsPage />} />
+              <Route path="comm-order-templates"             element={<CommissaryTemplateListPage />} />
+              <Route path="comm-order-templates/:id"         element={<CommissaryTemplateDetailPage />} />
+              <Route path="inventory-templates"      element={<InventoryTemplateListPage />} />
+              <Route path="inventory-templates/:id"  element={<InventoryTemplateDetailPage />} />
             </>}
 
             {/* Store-side routes (admin, gm, store) */}
             {isStoreUser && <>
-              <Route path="count-sheets"                     element={<CountSheetHome />} />
-              <Route path="count-sheet/:submissionId"        element={<CountSheet />} />
+              <Route path="count-sheets"                     element={<OrderSheetHomePage />} />
+              <Route path="count-sheet/:submissionId"        element={<OrderSheetPage />} />
             </>}
 
             {/* Orders — store side and commissary side */}
             {isAnyStaff && <>
-              <Route path="orders/history"                   element={<OrderHistory />} />
-              <Route path="orders/:id"                       element={<OrderDetail />} />
-              <Route path="inventory"                element={<InventoryHome />} />
-              <Route path="inventory/history"        element={<InventoryHistory />} />
-              <Route path="inventory/entry/:submissionId" element={<InventorySheet />} />
-              <Route path="inventory/:id"            element={<InventoryDetail />} />
+              <Route path="orders/history"                   element={<PurchaseOrderHistoryPage />} />
+              <Route path="orders/:id"                       element={<PurchaseOrderDetailPage />} />
+              <Route path="inventory"                element={<InventoryHomePage />} />
+              <Route path="inventory/history"        element={<InventoryHistoryPage />} />
+              <Route path="inventory/entry/:submissionId" element={<InventoryCountSheetPage />} />
+              <Route path="inventory/:id"            element={<InventoryDetailPage />} />
             </>}
 
             {/* 404 */}
