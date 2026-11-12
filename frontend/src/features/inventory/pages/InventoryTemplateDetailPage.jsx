@@ -290,7 +290,10 @@ export default function InventoryTemplateDetailPage() {
       setAddingUnitToItem(null)
       setSelectedUnitId('')
       fetchTemplate()
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error('Failed to add count unit', e)
+      alert(e.response?.data?.error || 'Could not add that count unit.')
+    }
   }
 
   const handleRemoveCountUnit = async (unitRowId) => {

@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { useAuth } from '../../../core/auth/AuthContext.js'
+import '../../../core/styles/shared-ui.css'   // .alert
 import '../../../core/styles/count-entry-sheet.css'
 
 export default function InventoryCountSheetPage() {
   const { submissionId } = useParams()
   const navigate         = useNavigate()
-  const { isAdmin, isManager } = useAuth()
+  const { isAdmin, isGM } = useAuth()
+  const isManager = isAdmin || isGM   // delete is admin / store GM only
 
   const [submission,  setSubmission]  = useState(null)
   const [loading,     setLoading]     = useState(true)
@@ -15,6 +17,7 @@ export default function InventoryCountSheetPage() {
   const [saving,      setSaving]      = useState(false)
   const [submitting,  setSubmitting]  = useState(false)
   const [saved,       setSaved]       = useState(false)
+  const [saveError,   setSaveError]   = useState(null)   // { message, missing: [...] }
 
   // entries: { `${product_id}_${unit_id}`: quantity }
   const [entries,   setEntries]   = useState({})
@@ -27,9 +30,14 @@ export default function InventoryCountSheetPage() {
       const res = await axios.get(`/api/inventory-submissions/${submissionId}`)
       setSubmission(res.data)
 
-      // Pre-populate from existing counts
+      // Pre-populate from the lines this inventory saved (exactly as typed).
+      // Older inventories have no saved lines, so fall back to the count rows.
       const saved = {}
-      res.data.items?.forEach(item => {
+      if (res.data.entries?.length > 0) {
+        res.data.entries.forEach(e => {
+          saved[`${e.product_id}_${e.unit_id}`] = String(parseFloat(e.quantity))
+        })
+      } else res.data.items?.forEach(item => {
         if (item.entered_quantity != null && item.entered_unit_id != null) {
           saved[`${item.product_id}_${item.entered_unit_id}`] = String(item.entered_quantity)
         } else if (item.base_quantity != null) {
@@ -67,7 +75,6 @@ export default function InventoryCountSheetPage() {
               product_id:   item.product_id,
               quantity:     parseFloat(qty),
               unit_id:      cu.unit_id,
-              base_unit_id: item.base_unit_id,
             })
           }
         })
@@ -76,18 +83,25 @@ export default function InventoryCountSheetPage() {
     return entryList
   }
 
+  // Returns true when the save worked, so Submit can stop on a failed save.
   const handleSave = async () => {
     setSaving(true)
+    setSaveError(null)
     try {
-      // Convert entries to base units server-side via the save endpoint
-      const entryList = buildEntryList()
+      // The server converts every line to base units and adds them per product
       await axios.put(`/api/inventory-submissions/${submissionId}/save`, {
-        entries: entryList
+        entries: buildEntryList()
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+      return true
     } catch (e) {
       console.error('Failed to save', e)
+      setSaveError({
+        message: e.response?.data?.error || 'Save failed. Check your connection and try again.',
+        missing: e.response?.data?.missing_conversions || [],
+      })
+      return false
     } finally {
       setSaving(false)
     }
@@ -95,13 +109,14 @@ export default function InventoryCountSheetPage() {
 
   const handleSubmit = async () => {
     if (!confirm('Submit this inventory? You will still be able to view it after.')) return
-    await handleSave()
+    if (!(await handleSave())) return
     setSubmitting(true)
     try {
       await axios.post(`/api/inventory-submissions/${submissionId}/submit`)
       navigate('/inventory/history')
     } catch (e) {
       console.error('Failed to submit', e)
+      setSaveError({ message: e.response?.data?.error || 'Submit failed.', missing: [] })
     } finally {
       setSubmitting(false)
     }
@@ -176,6 +191,21 @@ export default function InventoryCountSheetPage() {
           textAlign: 'center',
         }}>
           Admin view — this inventory has been submitted
+        </div>
+      )}
+
+      {saveError && (
+        <div className="alert alert-error" style={{ margin: '0.75rem 1rem 0' }}>
+          <div>{saveError.message}</div>
+          {saveError.missing.length > 0 && (
+            <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.2rem' }}>
+              {saveError.missing.map(m => (
+                <li key={`${m.product_id}_${m.unit_id}`}>
+                  {m.product_name}: {m.unit_name} has no conversion to {m.base_unit}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

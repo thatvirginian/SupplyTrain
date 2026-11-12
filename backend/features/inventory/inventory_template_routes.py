@@ -29,6 +29,7 @@ from core.auth import (
     admin_required, staff_required, get_user_location_or_raise,
 )
 from core.database import get_engine
+from core.units import has_base_conversion
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +401,14 @@ def add_inventory_item_unit(item_id):
         return jsonify({'error': 'unit_id is required'}), 400
     try:
         with get_engine().begin() as conn:
+            item = conn.execute(text("""
+                SELECT product_id FROM inventory_template_items WHERE id = :id
+            """), {'id': item_id}).fetchone()
+            if not item:
+                return jsonify({'error': 'Template item not found'}), 404
+            if not has_base_conversion(conn, item.product_id, int(unit_id)):
+                return jsonify({'error': 'This unit has no conversion to the product\'s base unit. '
+                                         'Add the conversion on the product first.'}), 400
             result = conn.execute(text("""
                 INSERT INTO inventory_template_item_units (item_id, unit_id, sort_order)
                 VALUES (:item_id, :unit_id, :sort_order)

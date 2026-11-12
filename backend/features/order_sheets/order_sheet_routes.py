@@ -1370,7 +1370,9 @@ def submit_sheet(submission_id):
                     )
                     ON CONFLICT (location_id, product_id, count_date) DO UPDATE SET
                         inventory_submission_id = EXCLUDED.inventory_submission_id,
+                        submission_id           = EXCLUDED.submission_id,
                         base_quantity           = EXCLUDED.base_quantity,
+                        base_unit_id            = EXCLUDED.base_unit_id,
                         vendor_item_id          = EXCLUDED.vendor_item_id,
                         vendor_id               = EXCLUDED.vendor_id,
                         vendor_code             = EXCLUDED.vendor_code,
@@ -1378,7 +1380,12 @@ def submit_sheet(submission_id):
                         par_unit_id             = EXCLUDED.par_unit_id,
                         par_base_qty            = EXCLUDED.par_base_qty,
                         order_qty               = EXCLUDED.order_qty,
-                        order_unit_id           = EXCLUDED.order_unit_id
+                        order_unit_id           = EXCLUDED.order_unit_id,
+                        -- The order sheet's lines live in sheet_entries; clear any
+                        -- earlier manual entry so the row never contradicts itself.
+                        entered_quantity        = NULL,
+                        entered_unit_id         = NULL,
+                        entered_by              = EXCLUDED.entered_by
                 """), [
                     {
                         'submission_id':      submission_id,

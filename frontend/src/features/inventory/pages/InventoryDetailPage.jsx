@@ -10,7 +10,9 @@ import './InventoryDetailPage.css'
 export default function InventoryDetailPage() {
   const { id }   = useParams()
   const navigate = useNavigate()
-  const { isAdmin, isManager } = useAuth()
+  const { isAdmin, isGM } = useAuth()
+  // Corrections and deletes are admin / store GM only (matches gm_or_admin_required)
+  const isManager = isAdmin || isGM
 
   const [inventory, setInventory] = useState(null)
   const [loading,   setLoading]   = useState(true)
@@ -22,6 +24,7 @@ export default function InventoryDetailPage() {
   // Inline editing
   const [editingItem,     setEditingItem]     = useState(null)
   const [editQty,         setEditQty]         = useState('')
+  const [editUnitId,      setEditUnitId]      = useState('')
   const [correctionNotes, setCorrectionNotes] = useState('')
   const [saving,          setSaving]          = useState(false)
 
@@ -55,11 +58,33 @@ export default function InventoryDetailPage() {
     return `${parseFloat(qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${unit || ''}`
   }
 
+  // Units a correction can be made in: the base unit, plus any count unit the
+  // template offers for this product (those are guaranteed to have a conversion).
+  const unitOptionsFor = (item) => {
+    const opts = [{ unit_id: item.base_unit_id, unit_name: item.base_unit }]
+    inventory?.template_sections?.forEach(s => s.items?.forEach(ti => {
+      if (ti.product_id !== item.product_id) return
+      ti.count_units?.forEach(cu => {
+        if (!opts.some(o => o.unit_id === cu.unit_id)) opts.push({ unit_id: cu.unit_id, unit_name: cu.unit_name })
+      })
+    }))
+    return opts
+  }
+
+  const startEditing = (item) => {
+    setEditingItem(item.id)
+    setEditQty(item.base_quantity != null ? parseFloat(item.base_quantity) : '')
+    setEditUnitId(String(item.base_unit_id))
+    setCorrectionNotes('')
+  }
+
   const handleCorrect = async (item) => {
+    if (editQty === '' || isNaN(parseFloat(editQty))) return
     setSaving(true)
     try {
       await axios.put(`/api/inventory-submissions/${id}/items/${item.id}`, {
-        base_quantity:    parseFloat(editQty),
+        quantity:         parseFloat(editQty),
+        unit_id:          parseInt(editUnitId),
         correction_notes: correctionNotes || null,
       })
       setEditingItem(null)
@@ -68,6 +93,7 @@ export default function InventoryDetailPage() {
       fetchInventory()
     } catch (e) {
       console.error('Failed to correct item', e)
+      alert(e.response?.data?.error || 'Could not save the correction.')
     } finally {
       setSaving(false)
     }
@@ -205,16 +231,24 @@ export default function InventoryDetailPage() {
                           if (e.key === 'Enter')  handleCorrect(item)
                           if (e.key === 'Escape') setEditingItem(null)
                         }} />
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.base_unit}</span>
+                      {(() => {
+                        const opts = unitOptionsFor(item)
+                        return opts.length > 1 ? (
+                          <select className="input" value={editUnitId} style={{ width: 'auto' }}
+                            onChange={e => setEditUnitId(e.target.value)}>
+                            {opts.map(o => <option key={o.unit_id} value={o.unit_id}>{o.unit_name}</option>)}
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.base_unit}</span>
+                        )
+                      })()}
                     </div>
                   ) : (
                     <span className="inv-qty-value"
                       style={{ cursor: isManager ? 'pointer' : 'default' }}
                       onClick={() => {
                         if (!isManager) return
-                        setEditingItem(item.id)
-                        setEditQty(item.base_quantity != null ? parseFloat(item.base_quantity) : '')
-                        setCorrectionNotes('')
+                        startEditing(item)
                       }}
                       title={isManager ? 'Click to correct' : ''}>
                       {formatQty(item.base_quantity, item.base_unit)}

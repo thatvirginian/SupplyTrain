@@ -30,6 +30,7 @@ from core.auth import (
     admin_required, staff_required, _get_user_location,
 )
 from core.database import get_engine
+from core.units import has_base_conversion
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +538,14 @@ def add_section_item_unit(item_id):
 
     try:
         with get_engine().begin() as conn:
+            item = conn.execute(text("""
+                SELECT product_id FROM sheet_section_items WHERE id = :id
+            """), {'id': item_id}).fetchone()
+            if not item:
+                return jsonify({'error': 'Template item not found'}), 404
+            if not has_base_conversion(conn, item.product_id, int(unit_id)):
+                return jsonify({'error': 'This unit has no conversion to the product\'s base unit. '
+                                         'Add the conversion on the product first.'}), 400
             result = conn.execute(text("""
                 INSERT INTO sheet_section_item_units (item_id, unit_id, sort_order)
                 VALUES (:item_id, :unit_id, :sort_order)

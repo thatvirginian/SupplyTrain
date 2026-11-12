@@ -11,6 +11,9 @@ export default function InventoryHomePage() {
   const { isAdmin, isManager } = useAuth()
 
   const [templates,   setTemplates]   = useState([])
+  const [locations,   setLocations]   = useState([])    // admin only
+  const [locationId,  setLocationId]  = useState('')    // admin's chosen location
+  const [createError, setCreateError] = useState(null)
   const [recent,      setRecent]      = useState([])
   const [loading,     setLoading]     = useState(true)
   const [creating,    setCreating]    = useState(false)
@@ -22,12 +25,21 @@ export default function InventoryHomePage() {
   )
   const [showForm, setShowForm] = useState(false)
 
+  // Staff: their own location's templates and inventories.
+  // Admins: pick a location first; templates and recent list follow it.
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
+      if (isAdmin && !locationId) {
+        setTemplates([])
+        const recentRes = await axios.get('/api/inventory-submissions', { params: { per_page: 5 } })
+        setRecent(recentRes.data.submissions || [])
+        return
+      }
+      const params = isAdmin ? { location_id: locationId } : {}
       const [tmplRes, recentRes] = await Promise.all([
-        axios.get('/api/inventory-templates'),
-        axios.get('/api/inventory-submissions', { params: { per_page: 5 } }),
+        axios.get('/api/inventory-templates', { params }),
+        axios.get('/api/inventory-submissions', { params: { ...params, per_page: 5 } }),
       ])
       setTemplates(tmplRes.data)
       setRecent(recentRes.data.submissions || [])
@@ -36,21 +48,38 @@ export default function InventoryHomePage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [isAdmin, locationId])
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  useEffect(() => {
+    if (!isAdmin) return
+    axios.get('/api/locations')
+      .then(res => setLocations(res.data))
+      .catch(e => console.error('Failed to load locations', e))
+  }, [isAdmin])
+
+  const handleLocationChange = (value) => {
+    setLocationId(value)
+    setSelectedTemplate('')
+    setCreateError(null)
+  }
+
   const handleCreate = async () => {
     if (!selectedTemplate || !countDate) return
+    if (isAdmin && !locationId) return
     setCreating(true)
+    setCreateError(null)
     try {
       const res = await axios.post('/api/inventory-submissions', {
         template_id: parseInt(selectedTemplate),
         count_date:  countDate,
+        ...(isAdmin ? { location_id: locationId } : {}),
       })
       navigate(`/inventory/entry/${res.data.id}`)
     } catch (e) {
       console.error('Failed to create inventory', e)
+      setCreateError(e.response?.data?.error || 'Could not start the inventory.')
     } finally {
       setCreating(false)
     }
@@ -84,9 +113,26 @@ export default function InventoryHomePage() {
           <h2 className="card-title">Start New Inventory</h2>
         </div>
         <div className="card-body">
-          {templates.length === 0 ? (
+          {isAdmin && (
+            <div className="form-group" style={{ maxWidth: '320px' }}>
+              <label className="form-label">Location</label>
+              <select className="input" value={locationId}
+                onChange={e => handleLocationChange(e.target.value)}>
+                <option value="">Select location...</option>
+                {locations.map(l => (
+                  <option key={l.store_guid} value={l.store_guid}>{l.location_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {createError && <div className="alert alert-error">{createError}</div>}
+          {isAdmin && !locationId ? (
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              No inventory templates assigned to your location.
+              Choose a location to see its inventory templates.
+            </p>
+          ) : templates.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              {isAdmin ? 'No inventory templates assigned to this location.' : 'No inventory templates assigned to your location.'}
               {isAdmin && ' Create one in Templates.'}
             </p>
           ) : (
@@ -131,6 +177,7 @@ export default function InventoryHomePage() {
               <thead>
                 <tr>
                   <th>Date</th>
+                  {isAdmin && <th>Location</th>}
                   <th>Template</th>
                   <th>Items</th>
                   <th>Status</th>
@@ -145,6 +192,7 @@ export default function InventoryHomePage() {
                         : `/inventory/${s.id}`
                     )}>
                     <td>{formatDate(s.count_date)}</td>
+                    {isAdmin && <td style={{ color: 'var(--text-secondary)' }}>{s.location_name}</td>}
                     <td style={{ color: 'var(--text-secondary)' }}>
                       {s.template_name || (s.source === 'count_sheet' ? 'Count Sheet' : '—')}
                     </td>
