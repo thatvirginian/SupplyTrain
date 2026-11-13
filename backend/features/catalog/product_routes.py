@@ -18,6 +18,7 @@ from core.auth import (
     admin_required,
 )
 from core.database import get_engine
+from core.units import load_base_units, load_conversion_map, base_factor
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,8 @@ def get_product(product_id):
                 p.product_type, p.active, p.retired_date, p.notes,
                 p.created_at, p.updated_at,
                 p.order_rounding_threshold,
+                p.inventory_unit_id,
+                iu.name AS inventory_unit,
                 c.id    AS category_id,
                 c.name  AS category_name,
                 u.id    AS base_unit_id,
@@ -170,6 +173,7 @@ def get_product(product_id):
             FROM products p
             LEFT JOIN product_categories c ON p.category_id = c.id
             LEFT JOIN units u              ON p.base_unit_id = u.id
+            LEFT JOIN units iu             ON p.inventory_unit_id = iu.id
             WHERE p.id = :id
         """), {'id': product_id}).mappings().fetchone()
 
@@ -244,6 +248,18 @@ def get_product(product_id):
     result['unit_conversions']      = [dict(u) for u in unit_convs]
     result['used_in_recipes']       = [dict(r) for r in recipes]
     result['location_assignments']  = [dict(l) for l in location_assignments]
+
+    # Units this product can be SHOWN in on inventories: the base unit, plus any
+    # unit with a direct conversion to it (product-specific or global).
+    options = {product['base_unit_id']: product['base_unit']}
+    for uc in unit_convs:
+        if uc['to_unit_id'] == product['base_unit_id']:
+            options.setdefault(uc['from_unit_id'], uc['from_unit'])
+        elif uc['from_unit_id'] == product['base_unit_id']:
+            options.setdefault(uc['to_unit_id'], uc['to_unit'])
+    result['inventory_unit_options'] = [
+        {'unit_id': uid, 'unit_name': name} for uid, name in options.items() if uid is not None
+    ]
     return jsonify(result)
 
 
@@ -291,12 +307,29 @@ def create_product():
         return jsonify({'error': str(e)}), 500
 
 
+class InventoryUnitError(Exception):
+    """The chosen inventory unit has no conversion to the base unit (rolls the save back)."""
+
+
 @bp.route('/products/<int:product_id>', methods=['PUT'])
 @admin_required
 def update_product(product_id):
     data = request.get_json(force=True)
     try:
         with get_engine().begin() as conn:
+            # Inventory unit (display only). Changed only when the page sends it;
+            # empty = the store's vendor order unit. Checked BEFORE anything is
+            # written, against the base unit this save leaves the product with.
+            inv_unit = None
+            if 'inventory_unit_id' in data:
+                inv_unit = int(data['inventory_unit_id']) if data.get('inventory_unit_id') else None
+                if inv_unit is not None:
+                    base_unit = (int(data['base_unit_id']) if data.get('base_unit_id')
+                                 else load_base_units(conn, [product_id]).get(product_id))
+                    conv = load_conversion_map(conn, [product_id], [inv_unit], [base_unit]) if base_unit else {}
+                    if base_factor(conv, inv_unit, base_unit, product_id) is None:
+                        raise InventoryUnitError()
+
             conn.execute(text("""
                 UPDATE products SET
                     name                     = COALESCE(:name, name),
@@ -324,7 +357,15 @@ def update_product(product_id):
                 'notes':                    data.get('notes'),
                 'order_rounding_threshold': data.get('order_rounding_threshold'),
             })
+
+            if 'inventory_unit_id' in data:
+                conn.execute(text("""
+                    UPDATE products SET inventory_unit_id = :u WHERE id = :id
+                """), {'u': inv_unit, 'id': product_id})
         return jsonify({'status': 'ok'})
+    except InventoryUnitError:
+        return jsonify({'error': 'The inventory unit needs a conversion to the product\'s '
+                                 'base unit. Add the conversion first. Nothing was saved.'}), 400
     except Exception as e:
         logger.error(f'update_product: {e}')
         return jsonify({'error': str(e)}), 500

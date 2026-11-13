@@ -33,6 +33,7 @@ def register_features(app):
     from features.commissary.commissary_template_routes import bp as commissary_template_routes_bp
     from features.inventory.inventory_template_routes import bp as inventory_template_routes_bp
     from features.inventory.inventory_count_routes import bp as inventory_count_routes_bp
+    from features.inventory.inventory_daily_routes import bp as inventory_daily_routes_bp
 
     app.register_blueprint(location_routes_bp)
     app.register_blueprint(unit_and_category_routes_bp)
@@ -48,3 +49,4 @@ def register_features(app):
     app.register_blueprint(commissary_template_routes_bp)
     app.register_blueprint(inventory_template_routes_bp)
     app.register_blueprint(inventory_count_routes_bp)
+    app.register_blueprint(inventory_daily_routes_bp)

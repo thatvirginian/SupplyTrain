@@ -16,6 +16,7 @@ export default function ProductDetailPage() {
   const [error,      setError]      = useState(null)
   const [saving,     setSaving]     = useState(false)
   const [saved,      setSaved]      = useState(false)
+  const [saveError,  setSaveError]  = useState(null)
 
   // Edit mode
   const [editing,  setEditing]  = useState(false)
@@ -45,6 +46,7 @@ export default function ProductDetailPage() {
         active:                    res.data.active,
         notes:                     res.data.notes || '',
         order_rounding_threshold:  res.data.order_rounding_threshold ?? 0.5,
+        inventory_unit_id:         res.data.inventory_unit_id || '',
       })
     } catch (e) {
       setError('Product not found.')
@@ -82,12 +84,14 @@ export default function ProductDetailPage() {
     setSaving(true)
     try {
       await axios.put(`/api/products/${id}`, editForm)
+      setSaveError(null)
       setEditing(false)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       fetchProduct()
     } catch (e) {
       console.error('Failed to save product', e)
+      setSaveError(e.response?.data?.error || 'Save failed.')
     } finally {
       setSaving(false)
     }
@@ -240,7 +244,7 @@ export default function ProductDetailPage() {
           </span>
           {editing ? (
             <>
-              <button className="btn btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
+              <button className="btn btn-secondary" onClick={() => { setEditing(false); setSaveError(null) }}>Cancel</button>
               <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
                 {saving ? 'Saving...' : 'Save Changes'}
               </button>
@@ -315,6 +319,21 @@ export default function ProductDetailPage() {
                     onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} />
                 </div>
                 <div className="form-group">
+                  <label className="form-label">Inventory Unit</label>
+                  <select className="input" value={editForm.inventory_unit_id}
+                    onChange={e => setEditForm(f => ({ ...f, inventory_unit_id: e.target.value }))}>
+                    <option value="">Store's order unit (default)</option>
+                    {(product.inventory_unit_options || []).map(o => (
+                      <option key={o.unit_id} value={o.unit_id}>{o.unit_name}</option>
+                    ))}
+                  </select>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                    The unit inventories are shown in. Counts are always stored in the base unit.
+                    Only units with a conversion to the base unit are listed.
+                  </p>
+                </div>
+                {saveError && <div className="alert alert-error">{saveError}</div>}
+                <div className="form-group">
                   <label className="form-label">Order Rounding Threshold</label>
                   <input className="input" type="number" min="0.01" max="1" step="0.05"
                     value={editForm.order_rounding_threshold}
@@ -352,6 +371,12 @@ export default function ProductDetailPage() {
                   <div className="info-row">
                     <span className="info-label">Base Unit</span>
                     <span className="info-value mono">{product.base_unit}</span>
+                  </div>
+                  <div className="info-row">
+                    <span className="info-label">Inventory Unit</span>
+                    <span className="info-value mono">
+                      {product.inventory_unit || <span style={{ color: 'var(--text-muted)' }}>store's order unit</span>}
+                    </span>
                   </div>
                   {product.product_type && (
                     <div className="info-row">

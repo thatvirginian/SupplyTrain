@@ -1,0 +1,80 @@
+/* InventoryDailyPage — the daily inventory table */
+
+.daily-empty {
+  padding:    2rem;
+  text-align: center;
+  color:      var(--text-muted);
+}
+
+.daily-table td { vertical-align: top; }
+
+.daily-category-row td {
+  background:     var(--bg-raised);
+  color:          var(--text-secondary);
+  font-size:      0.65rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding:        0.4rem 1rem;
+}
+.daily-category-row:hover { background: none; }
+
+.daily-product { font-weight: 500; }
+
+.daily-sub {
+  font-size: 0.7rem;
+  color:     var(--text-muted);
+}
+.daily-sub-inline {
+  font-size: 0.75rem;
+  color:     var(--text-secondary);
+}
+
+.daily-qty-col { width: 180px; }
+
+.daily-qty {
+  font-family: var(--font-mono);
+  font-size:   0.85rem;
+  font-weight: 600;
+}
+.daily-unit {
+  font-weight: 400;
+  color:       var(--text-secondary);
+}
+
+/* Not counted on this day: last count in light grey */
+.daily-last {
+  font-family: var(--font-mono);
+  font-size:   0.8rem;
+  color:       var(--text-muted);
+  opacity:     0.75;
+}
+.daily-last-date {
+  font-family: var(--font-body, inherit);
+  font-size:   0.68rem;
+}
+.daily-not-counted .daily-product { color: var(--text-muted); }
+
+.daily-replaced {
+  display:        inline-block;
+  margin-left:    0.4rem;
+  padding:        0.1rem 0.35rem;
+  background:     rgba(148,163,184,0.18);
+  color:          var(--text-muted);
+  border-radius:  var(--radius-sm);
+  font-size:      0.6rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  white-space:    nowrap;
+}
+
+.daily-warn {
+  font-size: 0.65rem;
+  color:     var(--warning);
+}
+
+@media (max-width: 700px) {
+  .daily-qty-col { width: auto; }
+  .daily-table th:nth-child(4),
+  .daily-table td:nth-child(4) { display: none; }
+}

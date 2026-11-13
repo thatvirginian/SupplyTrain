@@ -95,6 +95,10 @@ export default function InventoryHomePage() {
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary"
+            onClick={() => navigate('/inventory/daily')}>
+            Daily Inventory
+          </button>
+          <button className="btn btn-secondary"
             onClick={() => navigate('/inventory/history')}>
             View History
           </button>

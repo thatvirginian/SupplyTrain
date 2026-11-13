@@ -65,6 +65,7 @@ export default function Layout() {
           <NavItem to="/count-sheets"   label="Order Sheet"    icon="≡" collapsed={collapsed} />
           <NavItem to="/orders/history" label="Order History"  icon="◷" collapsed={collapsed} />
           <NavItem to="/inventory"      label="Inventories"    icon="⧉" collapsed={collapsed} />
+          <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
         </nav>
 
         <div className="sidebar-footer">
