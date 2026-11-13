@@ -23,8 +23,7 @@ export default function InventoryDetailPage() {
 
   // Inline editing
   const [editingItem,     setEditingItem]     = useState(null)
-  const [editQty,         setEditQty]         = useState('')
-  const [editUnitId,      setEditUnitId]      = useState('')
+  const [editLines,       setEditLines]       = useState({})   // unit_id -> typed amount
   const [correctionNotes, setCorrectionNotes] = useState('')
   const [saving,          setSaving]          = useState(false)
 
@@ -70,41 +69,49 @@ export default function InventoryDetailPage() {
     return lines.map(l => formatQty(l.quantity, l.unit_name).trim()).join(' + ')
   }
 
-  // Units a correction can be made in: the base unit, plus any count unit the
-  // template offers for this product (those are guaranteed to have a conversion).
-  const unitOptionsFor = (item) => {
-    const opts = [{ unit_id: item.base_unit_id, unit_name: item.base_unit }]
-    inventory?.template_sections?.forEach(s => s.items?.forEach(ti => {
-      if (ti.product_id !== item.product_id) return
-      ti.count_units?.forEach(cu => {
-        if (!opts.some(o => o.unit_id === cu.unit_id)) opts.push({ unit_id: cu.unit_id, unit_name: cu.unit_name })
-      })
-    }))
-    // ...and the units it was actually counted in (order sheet inventories have no template)
-    linesFor(item).forEach(l => {
-      if (!opts.some(o => o.unit_id === l.unit_id)) opts.push({ unit_id: l.unit_id, unit_name: l.unit_name })
-    })
-    return opts
-  }
-
+  // Correcting one product in place, the way it was counted: one box per unit
+  // (the units it was counted in, then the template's other units). The server
+  // sends these as item.unit_options, each with today's factor to the base unit.
   const startEditing = (item) => {
+    const typed = {}
+    linesFor(item).forEach(l => { typed[l.unit_id] = String(parseFloat(l.quantity)) })
+    const lines = {}
+    ;(item.unit_options || []).forEach(o => { lines[o.unit_id] = typed[o.unit_id] ?? '' })
     setEditingItem(item.product_id)
-    setEditQty(item.base_quantity != null ? parseFloat(item.base_quantity) : '')
-    setEditUnitId(String(item.base_unit_id))
+    setEditLines(lines)
     setCorrectionNotes('')
   }
 
+  const cancelEditing = () => { setEditingItem(null); setEditLines({}) }
+
+  // Live total in the base unit; null when a filled-in unit has no conversion
+  const editTotal = (item) => {
+    let total = 0
+    for (const o of item.unit_options || []) {
+      const v = editLines[o.unit_id]
+      if (v === '' || v == null) continue
+      const n = parseFloat(v)
+      if (isNaN(n)) return null
+      if (!o.to_base) return null
+      total += n * o.to_base
+    }
+    return total
+  }
+
   const handleCorrect = async (item) => {
-    if (editQty === '' || isNaN(parseFloat(editQty))) return
+    const lines = (item.unit_options || [])
+      .map(o => ({ unit_id: o.unit_id, quantity: editLines[o.unit_id] }))
+      .filter(l => l.quantity !== '' && l.quantity != null)
+      .map(l => ({ ...l, quantity: parseFloat(l.quantity) }))
+    if (lines.length === 0) { alert('Enter at least one amount.'); return }
+    if (lines.some(l => isNaN(l.quantity) || l.quantity < 0)) { alert('Amounts must be numbers, 0 or more.'); return }
     setSaving(true)
     try {
       await axios.put(`/api/inventory-submissions/${id}/products/${item.product_id}`, {
-        quantity:         parseFloat(editQty),
-        unit_id:          parseInt(editUnitId),
+        lines,
         correction_notes: correctionNotes || null,
       })
-      setEditingItem(null)
-      setEditQty('')
+      cancelEditing()
       setCorrectionNotes('')
       fetchInventory()
     } catch (e) {
@@ -261,33 +268,13 @@ export default function InventoryDetailPage() {
                 </div>
 
                 <div className="inv-detail-qty">
-                  {editingItem === item.product_id ? (
-                    <div className="inv-edit-wrap">
-                      <input className="input" type="number" step="any" min="0"
-                        value={editQty} autoFocus style={{ width: '90px' }}
-                        onChange={e => setEditQty(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter')  handleCorrect(item)
-                          if (e.key === 'Escape') setEditingItem(null)
-                        }} />
-                      {(() => {
-                        const opts = unitOptionsFor(item)
-                        return opts.length > 1 ? (
-                          <select className="input" value={editUnitId} style={{ width: 'auto' }}
-                            onChange={e => setEditUnitId(e.target.value)}>
-                            {opts.map(o => <option key={o.unit_id} value={o.unit_id}>{o.unit_name}</option>)}
-                          </select>
-                        ) : (
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.base_unit}</span>
-                        )
-                      })()}
-                    </div>
-                  ) : (
-                    <span className="inv-qty-value"
+                  {(
+                    <span className={`inv-qty-value ${editingItem === item.product_id ? 'inv-qty-editing' : ''}`}
                       style={{ cursor: canCorrect ? 'pointer' : 'default' }}
                       onClick={() => {
                         if (!canCorrect) return
-                        startEditing(item)
+                        if (editingItem === item.product_id) cancelEditing()
+                        else startEditing(item)
                       }}
                       title={canCorrect ? 'Click to correct' : ''}>
                       {formatQty(item.base_quantity, item.base_unit)}
@@ -312,23 +299,45 @@ export default function InventoryDetailPage() {
                   }
                 </div>
 
-                {isManager && (
-                  <div className="inv-detail-actions no-print">
-                    {editingItem === item.product_id ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                        <input className="input" placeholder="Reason (optional)"
-                          value={correctionNotes} style={{ fontSize: '0.75rem', padding: '0.2rem 0.4rem' }}
-                          onChange={e => setCorrectionNotes(e.target.value)} />
-                        <div style={{ display: 'flex', gap: '0.3rem' }}>
-                          <button className="btn btn-primary btn-sm"
-                            onClick={() => handleCorrect(item)} disabled={saving}>✓</button>
-                          <button className="btn btn-ghost btn-sm"
-                            onClick={() => setEditingItem(null)}>✕</button>
-                        </div>
+                {isManager && <div className="inv-detail-actions no-print" />}
+
+                {editingItem === item.product_id && (() => {
+                  const total = editTotal(item)
+                  return (
+                    <div className="inv-edit-panel no-print">
+                      <div className="inv-edit-units">
+                        {(item.unit_options || []).map((o, idx) => (
+                          <span key={o.unit_id} className="inv-edit-unit">
+                            {idx > 0 && <span className="inv-edit-plus">+</span>}
+                            <input className="input inv-edit-input" type="number" step="any" min="0"
+                              autoFocus={idx === 0} value={editLines[o.unit_id] ?? ''}
+                              onChange={e => setEditLines(l => ({ ...l, [o.unit_id]: e.target.value }))}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter')  handleCorrect(item)
+                                if (e.key === 'Escape') cancelEditing()
+                              }} />
+                            <span className="inv-edit-unit-name">{o.unit_name}</span>
+                            {!o.to_base && <span className="inv-edit-noconv" title="No conversion to the base unit">!</span>}
+                          </span>
+                        ))}
+                        <span className="inv-edit-total">
+                          = {total == null ? '?' : formatQty(total, item.base_unit)}
+                        </span>
                       </div>
-                    ) : null}
-                  </div>
-                )}
+                      <div className="inv-edit-actions">
+                        <input className="input inv-edit-reason" placeholder="Reason (optional)"
+                          value={correctionNotes}
+                          onChange={e => setCorrectionNotes(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleCorrect(item) }} />
+                        <button className="btn btn-primary btn-sm"
+                          onClick={() => handleCorrect(item)} disabled={saving}>
+                          {saving ? 'Saving...' : 'Save'}
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={cancelEditing}>Cancel</button>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             ))}
           </div>

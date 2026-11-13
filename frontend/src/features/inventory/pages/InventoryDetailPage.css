@@ -151,3 +151,46 @@
   text-transform: uppercase;
   white-space:    nowrap;
 }
+
+/* ── Correcting one product the way it was counted (one box per unit) ── */
+.inv-qty-editing { color: var(--info); }
+
+.inv-edit-panel {
+  grid-column:    1 / -1;
+  display:        flex;
+  flex-direction: column;
+  gap:            0.5rem;
+  margin-top:     0.5rem;
+  padding:        0.6rem 0.75rem;
+  background:     var(--bg-surface);
+  border:         1px solid var(--border);
+  border-radius:  var(--radius-md);
+}
+.inv-edit-units {
+  display:     flex;
+  flex-wrap:   wrap;
+  align-items: center;
+  gap:         0.4rem;
+}
+.inv-edit-unit {
+  display:     inline-flex;
+  align-items: center;
+  gap:         0.3rem;
+}
+.inv-edit-plus { color: var(--text-muted); margin-right: 0.2rem; }
+.inv-edit-input { width: 80px; font-family: var(--font-mono); }
+.inv-edit-unit-name { font-size: 0.8rem; color: var(--text-secondary); }
+.inv-edit-noconv { color: var(--warning); font-weight: 700; cursor: help; }
+.inv-edit-total {
+  margin-left: 0.4rem;
+  font-family: var(--font-mono);
+  font-size:   0.85rem;
+  font-weight: 600;
+}
+.inv-edit-actions {
+  display:     flex;
+  flex-wrap:   wrap;
+  align-items: center;
+  gap:         0.4rem;
+}
+.inv-edit-reason { flex: 1; min-width: 160px; max-width: 360px; font-size: 0.8rem; }

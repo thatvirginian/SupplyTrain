@@ -265,7 +265,10 @@ export default function InventoryCountSheetPage() {
                         const qty = entries[key] ?? ''
                         return (
                           <div key={cu.unit_id} className="sheet-count-row">
-                            <div className="sheet-count-unit">{cu.unit_name}</div>
+                            <div className="sheet-count-unit"
+                              title={cu.not_on_template ? 'Counted in this unit, but the template no longer offers it' : undefined}>
+                              {cu.unit_name}{cu.not_on_template && ' *'}
+                            </div>
                             <div className="sheet-count-input-wrap">
                               <label className="sheet-count-label">Quantity</label>
                               <input

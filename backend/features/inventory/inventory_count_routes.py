@@ -308,25 +308,36 @@ def get_inventory_submission(submission_id):
         entry_rows = conn.execute(text("""
             SELECT e.product_id, e.unit_id, e.quantity, e.base_quantity,
                    e.base_unit_id, e.entered_by, e.entered_at,
-                   COALESCE(u.display, u.name) AS unit_name
+                   u.name AS unit_name
             FROM inventory_count_entries e
             JOIN units u ON u.id = e.unit_id
             WHERE e.inventory_submission_id = :id AND e.superseded_at IS NULL
             ORDER BY e.product_id, e.unit_id
         """), {'id': submission_id}).mappings().all()
 
-    # Products this inventory counted that are not on its template (any more):
-    # list them in their own section so they can still be seen and edited.
-    on_layout = {i['product_id'] for sec in template_sections for i in (sec.get('items') or [])}
-    extra = {}
+    # Every unit an inventory was counted in must have a box, even when the
+    # template no longer offers it (a product or a unit removed since):
+    #   - units removed from a product that is still on the layout are added to
+    #     that product's count units (marked not_on_template);
+    #   - products no longer on the layout get their own section.
+    counted_units = {}                       # product_id -> [{unit_id, unit_name}] in saved order
     for e in entry_rows:
-        if e['product_id'] in on_layout:
-            continue
-        x = extra.setdefault(e['product_id'], {
-            'id': None, 'product_id': e['product_id'], 'count_units': [],
-        })
-        if not any(cu['unit_id'] == e['unit_id'] for cu in x['count_units']):
-            x['count_units'].append({'unit_id': e['unit_id'], 'unit_name': e['unit_name']})
+        lst = counted_units.setdefault(e['product_id'], [])
+        if not any(u['unit_id'] == e['unit_id'] for u in lst):
+            lst.append({'unit_id': e['unit_id'], 'unit_name': e['unit_name']})
+
+    on_layout = set()
+    for sec in template_sections:
+        for i in (sec.get('items') or []):
+            on_layout.add(i['product_id'])
+            have = {cu['unit_id'] for cu in i.get('count_units') or []}
+            for u in counted_units.get(i['product_id'], []):
+                if u['unit_id'] not in have:
+                    i.setdefault('count_units', []).append(dict(u, not_on_template=True))
+                    have.add(u['unit_id'])
+
+    extra = {pid: {'id': None, 'product_id': pid, 'count_units': list(units)}
+             for pid, units in counted_units.items() if pid not in on_layout}
     for i in items:
         if i['product_id'] in extra:
             extra[i['product_id']].update({
@@ -340,8 +351,37 @@ def get_inventory_submission(submission_id):
             'items': sorted(extra.values(), key=lambda x: x.get('product_name') or ''),
         }]
 
+    # For correcting one product in place: the units it can be corrected in, in
+    # the template's order (which already includes any counted unit the template
+    # dropped), else the counted units, else the base unit. Each carries today's
+    # factor to the count's base unit, for a live total.
+    template_units = {}
+    for sec in template_sections:
+        for i in (sec.get('items') or []):
+            lst = template_units.setdefault(i['product_id'], [])
+            for cu in i.get('count_units') or []:
+                if not any(u['unit_id'] == cu['unit_id'] for u in lst):
+                    lst.append({'unit_id': cu['unit_id'], 'unit_name': cu['unit_name']})
+    items_out = [dict(i) for i in items]
+    with get_engine().connect() as conn:
+        pids  = {i['product_id'] for i in items_out}
+        uids  = {u['unit_id'] for lst in list(counted_units.values()) + list(template_units.values()) for u in lst}
+        uids |= {i['base_unit_id'] for i in items_out if i['base_unit_id']}
+        bases = {i['base_unit_id'] for i in items_out if i['base_unit_id']}
+        conv  = load_conversion_map(conn, pids, uids, bases)
+    for i in items_out:
+        opts = []
+        for u in template_units.get(i['product_id'], []) + counted_units.get(i['product_id'], []):
+            if not any(o['unit_id'] == u['unit_id'] for o in opts):
+                opts.append({'unit_id': u['unit_id'], 'unit_name': u['unit_name']})
+        if not opts and i['base_unit_id']:
+            opts.append({'unit_id': i['base_unit_id'], 'unit_name': i['base_unit']})
+        for o in opts:
+            o['to_base'] = base_factor(conv, o['unit_id'], i['base_unit_id'], i['product_id'])
+        i['unit_options'] = opts
+
     result = dict(sub)
-    result['items']             = [dict(i) for i in items]
+    result['items']             = items_out
     result['template_sections'] = template_sections
     result['entries']           = [dict(e) for e in entry_rows]
     # Whether this user may change the counts once submitted (roles in core/auth.py)
@@ -354,26 +394,41 @@ def get_inventory_submission(submission_id):
 def correct_inventory_product(submission_id, product_id):
     """
     Correct one product's count on a submitted inventory (INVENTORY_EDIT_ROLES).
-    Body: {quantity, unit_id, correction_notes}  (correct in any unit with a conversion)
-       or {base_quantity, correction_notes}      (correct directly in base units)
+    Body, any of:
+      {lines: [{unit_id, quantity}, ...], correction_notes}
+            one amount per unit, as counted (e.g. 5 oz + 10 bag); blanks ignored
+      {quantity, unit_id, correction_notes}   one amount in one unit
+      {base_quantity, correction_notes}       one amount in the count's base unit
 
+    Every unit must convert to the product's base unit, or nothing is saved.
     The old lines are kept as history, the first value stays in original_quantity,
     and the day's count follows only if this inventory is the one holding it.
     """
-    data     = request.get_json(force=True) or {}
-    quantity = data.get('quantity')
-    unit_id  = data.get('unit_id')
-    if quantity is None:
-        quantity = data.get('base_quantity')
-        unit_id  = None
-    if quantity is None:
-        return jsonify({'error': 'quantity is required'}), 400
-    try:
-        quantity = round(float(quantity), 4)
-    except (TypeError, ValueError):
-        return jsonify({'error': 'quantity must be a number'}), 400
-    if quantity < 0:
-        return jsonify({'error': 'quantity cannot be negative'}), 400
+    data = request.get_json(force=True) or {}
+
+    # ── What was sent: [(unit_id or None for "base unit", quantity)] ─────────
+    if 'lines' in data:
+        raw = [(l.get('unit_id'), l.get('quantity')) for l in (data.get('lines') or [])
+               if l.get('quantity') not in (None, '')]
+    elif data.get('quantity') is not None:
+        raw = [(data.get('unit_id'), data.get('quantity'))]
+    else:
+        raw = [(None, data.get('base_quantity'))] if data.get('base_quantity') is not None else []
+    if not raw:
+        return jsonify({'error': 'Enter at least one amount'}), 400
+
+    lines = {}
+    for unit_id, qty in raw:
+        try:
+            q = round(float(qty), 4)
+        except (TypeError, ValueError):
+            return jsonify({'error': f'"{qty}" is not a number'}), 400
+        if q < 0:
+            return jsonify({'error': 'Counts cannot be negative'}), 400
+        key = int(unit_id) if unit_id not in (None, '') else None
+        if key in lines:
+            return jsonify({'error': 'Each unit can appear only once'}), 400
+        lines[key] = q
 
     user = g.user.get('email')
     try:
@@ -390,29 +445,34 @@ def correct_inventory_product(submission_id, product_id):
             if not row:
                 return jsonify({'error': 'Count not found on this inventory'}), 404
 
-            if unit_id is None:
-                # Straight base-unit correction: stay in the unit this count was stored in.
-                base_unit_id = row.base_unit_id or row.product_base_unit_id
-                unit_id      = base_unit_id
-                base_qty     = quantity
-            else:
-                unit_id = int(unit_id)
-                base_qty, base_unit_id = _to_base(conn, product_id, unit_id, quantity)
+            rows = []
+            for unit_id, q in lines.items():
+                if unit_id is None:
+                    # Straight base-unit amount: stay in the unit this count was stored in
+                    base_unit_id = row.base_unit_id or row.product_base_unit_id
+                    rows.append({'product_id': product_id, 'unit_id': base_unit_id,
+                                 'quantity': q, 'base_quantity': q, 'base_unit_id': base_unit_id})
+                    continue
+                base_qty, base_unit_id = _to_base(conn, product_id, unit_id, q)
                 if base_qty is None:
-                    return jsonify({'error': 'This unit has no conversion to the product\'s base unit'}), 400
+                    name = conn.execute(text("SELECT name FROM units WHERE id = :u"),
+                                        {'u': unit_id}).scalar()
+                    return jsonify({'error': f'{name or "This unit"} has no conversion to the '
+                                             f'product\'s base unit. Nothing was saved.'}), 400
+                rows.append({'product_id': product_id, 'unit_id': unit_id,
+                             'quantity': q, 'base_quantity': base_qty, 'base_unit_id': base_unit_id})
 
-            replace_product_lines(conn, submission_id, product_id, [{
-                'product_id':    product_id,
-                'unit_id':       unit_id,
-                'quantity':      quantity,
-                'base_quantity': base_qty,
-                'base_unit_id':  base_unit_id,
-            }], user)
+            # Two entries landing on the same unit (base sent twice) would clash
+            if len({r['unit_id'] for r in rows}) != len(rows):
+                return jsonify({'error': 'Each unit can appear only once'}), 400
+
+            replace_product_lines(conn, submission_id, product_id, rows, user)
             sync_counts_from_entries(conn, submission_id, user, [product_id],
                                      mark_changes=True,
                                      correction_notes=data.get('correction_notes'))
             refresh_day_counts(conn, sub.location_id, sub.count_date, [product_id])
-        return jsonify({'status': 'ok', 'base_quantity': base_qty})
+        return jsonify({'status': 'ok',
+                        'base_quantity': round(sum(r['base_quantity'] for r in rows), 6)})
     except AccessError:
         raise
     except Exception as e:
@@ -590,8 +650,8 @@ def save_inventory_entries(submission_id):
             if missing:
                 names = conn.execute(text("""
                     SELECT p.id AS product_id, p.name AS product_name,
-                           u.id AS unit_id, COALESCE(u.display, u.name) AS unit_name,
-                           COALESCE(bu.display, bu.name) AS base_unit
+                           u.id AS unit_id, u.name AS unit_name,
+                           bu.name AS base_unit
                     FROM unnest(CAST(:pids AS bigint[]), CAST(:uids AS integer[])) AS m(pid, uid)
                     LEFT JOIN products p ON p.id = m.pid
                     LEFT JOIN units u    ON u.id = m.uid

@@ -196,7 +196,7 @@ def get_daily_inventory():
 
         unit_names = {
             u.id: u.name for u in conn.execute(text("""
-                SELECT id, COALESCE(display, name) AS name FROM units WHERE id = ANY(:ids)
+                SELECT id, name FROM units WHERE id = ANY(:ids)
             """), {'ids': list(display_ids | base_ids) or [0]}).fetchall()
         }
 

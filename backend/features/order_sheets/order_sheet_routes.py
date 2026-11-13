@@ -22,6 +22,7 @@ from datetime import date, timedelta
 
 from core.auth import (
     admin_required, store_required, _get_user_location,
+    can_edit_submitted_inventory,
 )
 from core.database import get_engine
 from features.inventory.inventory_count_service import (
@@ -401,6 +402,17 @@ def get_sheet_submission(submission_id):
 
     result = dict(submission)
     result['sections'] = sorted(section_map.values(), key=lambda s: s['sort_order'])
+
+    # The inventory this sheet created when it was submitted, and whether this
+    # user may correct it (roles: INVENTORY_EDIT_ROLES in core/auth.py)
+    if submission['status'] == 'submitted':
+        with get_engine().connect() as conn:
+            inv = conn.execute(text("""
+                SELECT id FROM inventory_submissions
+                WHERE sheet_submission_id = :id ORDER BY id DESC LIMIT 1
+            """), {'id': submission_id}).fetchone()
+        result['inventory_submission_id'] = inv.id if inv else None
+        result['can_edit_inventory']      = can_edit_submitted_inventory()
     return jsonify(result)
 
 
@@ -755,10 +767,12 @@ def save_draft_entries(submission_id):
     if not sub:
         return jsonify({'error': 'Submission not found'}), 404
 
-    roles    = g.user.get('roles', [])
-    is_admin = 'admin' in roles
-    if sub.status == 'submitted' and not is_admin:
-        return jsonify({'error': 'Cannot edit a submitted sheet'}), 400
+    # A submitted sheet is locked for everyone. Its on-hand counts became an
+    # inventory (and its purchase orders were made from them as they were);
+    # corrections are made on that inventory (Edit Counts), not on the sheet.
+    if sub.status == 'submitted':
+        return jsonify({'error': 'This sheet has been submitted. To correct its on-hand '
+                                 'counts, edit the inventory it created.'}), 400
 
     # Filter valid entries
     valid = [

@@ -198,7 +198,10 @@ export default function OrderSheetPage() {
   if (error)      return <div className="sheet-error">{error}</div>
   if (!submission) return null
 
-  const isSubmitted = submission.status === 'submitted' && !isAdmin
+  // A submitted sheet is read-only for everyone. Its counts live on in the
+  // inventory it created; corrections are made there (Edit Counts).
+  const isSubmitted   = submission.status === 'submitted'
+  const editInventory = isSubmitted && submission.can_edit_inventory && submission.inventory_submission_id
 
   return (
     <div className="sheet-page">
@@ -255,10 +258,24 @@ export default function OrderSheetPage() {
             </button>
           </div>
         )}
+        {isSubmitted && isAdmin && (
+          <div className="sheet-header-actions">
+            {editInventory && (
+              <button className="sheet-btn sheet-btn-primary"
+                onClick={() => navigate(`/inventory/entry/${submission.inventory_submission_id}`)}>
+                Edit Counts in Inventory
+              </button>
+            )}
+            <button className="sheet-btn sheet-btn-secondary"
+              onClick={() => window.open(`/api/sheet-submissions/${submissionId}/pdf`, '_blank')}>
+              Print PDF
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Admin editing submitted sheet banner */}
-      {submission.status === 'submitted' && isAdmin && (
+      {/* Submitted sheet: read-only, corrections go to its inventory */}
+      {isSubmitted && editInventory && (
         <div style={{
           background: 'rgba(245,158,11,0.1)',
           borderBottom: '1px solid rgba(245,158,11,0.3)',
@@ -267,7 +284,8 @@ export default function OrderSheetPage() {
           color: 'var(--warning)',
           textAlign: 'center',
         }}>
-          Admin edit mode — this sheet has already been submitted
+          This sheet has been submitted and is read-only. Its purchase orders keep the order as it was made.
+          To correct the on-hand counts, use Edit Counts in Inventory.
         </div>
       )}
 
