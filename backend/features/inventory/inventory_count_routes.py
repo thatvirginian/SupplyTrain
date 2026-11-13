@@ -1,16 +1,18 @@
 # =============================================================================
 # backend/features/inventory/inventory_count_routes.py
 # =============================================================================
-# Inventories (staff): inventory records. List, view, manual entry, save, submit, delete, and corrections with an audit trail.
+# Inventories (staff): list, view, manual entry, save, submit, delete, corrections.
+# The storage rules (drafts, latest submitted wins, fallback on delete) live in
+# inventory_count_service.py; read its header first.
 #
 # Endpoints in this file:
-#   GET     /api/inventory-submissions                                          list_inventory_submissions
-#   GET     /api/inventory-submissions/<int:submission_id>                      get_inventory_submission
-#   PUT     /api/inventory-submissions/<int:submission_id>/items/<int:item_id>  correct_inventory_item
-#   POST    /api/inventory-submissions                                          create_inventory_submission
-#   PUT     /api/inventory-submissions/<int:submission_id>/save                 save_inventory_entries
-#   POST    /api/inventory-submissions/<int:submission_id>/submit               submit_inventory
-#   DELETE  /api/inventory-submissions/<int:submission_id>                      delete_inventory_submission
+#   GET     /api/inventory-submissions                                                list_inventory_submissions
+#   GET     /api/inventory-submissions/<int:submission_id>                            get_inventory_submission
+#   PUT     /api/inventory-submissions/<int:submission_id>/products/<int:product_id>  correct_inventory_product
+#   POST    /api/inventory-submissions                                                create_inventory_submission
+#   PUT     /api/inventory-submissions/<int:submission_id>/save                       save_inventory_entries
+#   POST    /api/inventory-submissions/<int:submission_id>/submit                     submit_inventory
+#   DELETE  /api/inventory-submissions/<int:submission_id>                            delete_inventory_submission
 # =============================================================================
 
 from flask import Blueprint, jsonify, request, g
@@ -22,6 +24,10 @@ from core.auth import (
 )
 from core.database import get_engine
 from core.units import load_base_units, load_conversion_map, base_factor
+from features.inventory.inventory_count_service import (
+    supersede_line_pairs, insert_lines, replace_product_lines,
+    sync_counts_from_entries, refresh_day_counts, adopt_day_counts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +122,18 @@ def list_inventory_submissions():
                 ivs.notes, ivs.created_at,
                 l.location_name,
                 it.name AS template_name,
-                COUNT(ic.id) AS item_count
+                -- Products counted: a draft only has lines; a submitted inventory has totals
+                CASE WHEN ivs.status = 'draft' THEN (
+                    SELECT COUNT(DISTINCT e.product_id) FROM inventory_count_entries e
+                    WHERE e.inventory_submission_id = ivs.id AND e.superseded_at IS NULL
+                ) ELSE (
+                    SELECT COUNT(*) FROM inventory_submission_counts c
+                    WHERE c.inventory_submission_id = ivs.id
+                ) END AS item_count
             FROM inventory_submissions ivs
             LEFT JOIN locations l            ON l.store_guid::text = ivs.location_id
             LEFT JOIN inventory_templates it ON ivs.template_id    = it.id
-            LEFT JOIN inventory_counts ic    ON ic.inventory_submission_id = ivs.id
             {where}
-            GROUP BY ivs.id, l.location_name, it.name
             ORDER BY ivs.count_date DESC, ivs.created_at DESC
             LIMIT :limit OFFSET :offset
         """), params).mappings().all()
@@ -159,32 +170,69 @@ def get_inventory_submission(submission_id):
         if not sub:
             return jsonify({'error': 'Inventory not found'}), 404
 
+        # What THIS inventory counted, one row per product (base units).
+        # is_day_count: this inventory currently holds the day's count for the product.
         items = conn.execute(text("""
             SELECT
-                ic.id, ic.product_id, ic.count_date,
-                ic.base_quantity, ic.base_unit_id,
-                ic.entered_quantity, ic.entered_unit_id,
-                ic.vendor_code, ic.vendor_id,
-                ic.par_qty, ic.par_unit_id, ic.par_base_qty,
-                ic.order_qty, ic.order_unit_id,
-                ic.original_quantity, ic.corrected_by, ic.corrected_at,
-                ic.correction_notes, ic.entered_by,
+                c.id, c.product_id,
+                c.base_quantity, c.base_unit_id,
+                c.entered_quantity, c.entered_unit_id,
+                c.vendor_code, c.vendor_id,
+                c.par_qty, c.par_unit_id, c.par_base_qty,
+                c.order_qty, c.order_unit_id,
+                c.original_quantity, c.corrected_by, c.corrected_at,
+                c.correction_notes, c.entered_by,
                 p.name      AS product_name,
-                c.name      AS category,
+                cat.name    AS category,
                 u.name      AS base_unit,
                 v.name      AS vendor_name,
                 ou.name     AS order_unit,
-                pu.name     AS par_unit
-            FROM inventory_counts ic
-            JOIN products p          ON ic.product_id   = p.id
-            LEFT JOIN product_categories c ON p.category_id  = c.id
-            LEFT JOIN units u        ON ic.base_unit_id  = u.id
-            LEFT JOIN units ou       ON ic.order_unit_id = ou.id
-            LEFT JOIN units pu       ON ic.par_unit_id   = pu.id
-            LEFT JOIN vendors v      ON ic.vendor_id     = v.id
-            WHERE ic.inventory_submission_id = :id
-            ORDER BY c.name, p.name
+                pu.name     AS par_unit,
+                (d.id IS NOT NULL) AS is_day_count
+            FROM inventory_submission_counts c
+            JOIN products p                  ON c.product_id    = p.id
+            LEFT JOIN product_categories cat ON p.category_id   = cat.id
+            LEFT JOIN units u                ON c.base_unit_id  = u.id
+            LEFT JOIN units ou               ON c.order_unit_id = ou.id
+            LEFT JOIN units pu               ON c.par_unit_id   = pu.id
+            LEFT JOIN vendors v              ON c.vendor_id     = v.id
+            LEFT JOIN inventory_counts d
+                   ON d.inventory_submission_id = c.inventory_submission_id
+                  AND d.product_id              = c.product_id
+            WHERE c.inventory_submission_id = :id
+            ORDER BY cat.name, p.name
         """), {'id': submission_id}).mappings().all()
+
+        if not items and sub['status'] == 'draft':
+            # A draft has no totals yet: show what its saved lines add up to.
+            items = conn.execute(text("""
+                SELECT
+                    NULL AS id, t.product_id,
+                    t.base_quantity, t.base_unit_id,
+                    NULL AS entered_quantity, NULL AS entered_unit_id,
+                    NULL AS vendor_code, NULL AS vendor_id,
+                    NULL AS par_qty, NULL AS par_unit_id, NULL AS par_base_qty,
+                    NULL AS order_qty, NULL AS order_unit_id,
+                    NULL AS original_quantity, NULL AS corrected_by, NULL AS corrected_at,
+                    NULL AS correction_notes, NULL AS entered_by,
+                    p.name   AS product_name,
+                    cat.name AS category,
+                    u.name   AS base_unit,
+                    NULL AS vendor_name, NULL AS order_unit, NULL AS par_unit,
+                    FALSE AS is_day_count
+                FROM (
+                    SELECT e.product_id,
+                           SUM(e.base_quantity) AS base_quantity,
+                           MAX(e.base_unit_id)  AS base_unit_id
+                    FROM inventory_count_entries e
+                    WHERE e.inventory_submission_id = :id AND e.superseded_at IS NULL
+                    GROUP BY e.product_id
+                ) t
+                JOIN products p                  ON t.product_id   = p.id
+                LEFT JOIN product_categories cat ON p.category_id  = cat.id
+                LEFT JOIN units u                ON t.base_unit_id = u.id
+                ORDER BY cat.name, p.name
+            """), {'id': submission_id}).mappings().all()
 
         # For manual inventories fetch template sections
         template_sections = []
@@ -256,13 +304,16 @@ def get_inventory_submission(submission_id):
     return jsonify(result)
 
 
-@bp.route('/inventory-submissions/<int:submission_id>/items/<int:item_id>', methods=['PUT'])
+@bp.route('/inventory-submissions/<int:submission_id>/products/<int:product_id>', methods=['PUT'])
 @gm_or_admin_required
-def correct_inventory_item(submission_id, item_id):
+def correct_inventory_product(submission_id, product_id):
     """
-    Admin/GM correct a count, keeping the first value in original_quantity.
+    Admin/GM correct one product's count on a submitted inventory.
     Body: {quantity, unit_id, correction_notes}  (correct in any unit with a conversion)
        or {base_quantity, correction_notes}      (correct directly in base units)
+
+    The old lines are kept as history, the first value stays in original_quantity,
+    and the day's count follows only if this inventory is the one holding it.
     """
     data     = request.get_json(force=True) or {}
     quantity = data.get('quantity')
@@ -273,58 +324,54 @@ def correct_inventory_item(submission_id, item_id):
     if quantity is None:
         return jsonify({'error': 'quantity is required'}), 400
     try:
-        quantity = float(quantity)
+        quantity = round(float(quantity), 4)
     except (TypeError, ValueError):
         return jsonify({'error': 'quantity must be a number'}), 400
     if quantity < 0:
         return jsonify({'error': 'quantity cannot be negative'}), 400
 
+    user = g.user.get('email')
     try:
         with get_engine().begin() as conn:
-            _load_submission_for_user(conn, submission_id)
+            sub = _load_submission_for_user(conn, submission_id)
+            adopt_day_counts(conn, sub.location_id, sub.count_date)
 
             row = conn.execute(text("""
-                SELECT product_id, base_unit_id FROM inventory_counts
-                WHERE id = :id AND inventory_submission_id = :submission_id
-            """), {'id': item_id, 'submission_id': submission_id}).fetchone()
+                SELECT c.base_unit_id, p.base_unit_id AS product_base_unit_id
+                FROM inventory_submission_counts c
+                JOIN products p ON p.id = c.product_id
+                WHERE c.inventory_submission_id = :sid AND c.product_id = :pid
+            """), {'sid': submission_id, 'pid': product_id}).fetchone()
             if not row:
                 return jsonify({'error': 'Count not found on this inventory'}), 404
 
             if unit_id is None:
-                unit_id      = row.base_unit_id
+                # Straight base-unit correction: stay in the unit this count was stored in.
+                base_unit_id = row.base_unit_id or row.product_base_unit_id
+                unit_id      = base_unit_id
                 base_qty     = quantity
-                base_unit_id = row.base_unit_id
             else:
-                base_qty, base_unit_id = _to_base(conn, row.product_id, int(unit_id), quantity)
+                unit_id = int(unit_id)
+                base_qty, base_unit_id = _to_base(conn, product_id, unit_id, quantity)
                 if base_qty is None:
                     return jsonify({'error': 'This unit has no conversion to the product\'s base unit'}), 400
 
-            conn.execute(text("""
-                UPDATE inventory_counts SET
-                    original_quantity = COALESCE(original_quantity, base_quantity),
-                    base_quantity     = :base_qty,
-                    base_unit_id      = :base_unit_id,
-                    entered_quantity  = :quantity,
-                    entered_unit_id   = :unit_id,
-                    corrected_by      = :corrected_by,
-                    corrected_at      = NOW(),
-                    correction_notes  = :correction_notes
-                WHERE id = :id AND inventory_submission_id = :submission_id
-            """), {
-                'id':               item_id,
-                'submission_id':    submission_id,
-                'base_qty':         base_qty,
-                'base_unit_id':     base_unit_id,
-                'quantity':         quantity,
-                'unit_id':          unit_id,
-                'corrected_by':     g.user.get('email'),
-                'correction_notes': data.get('correction_notes'),
-            })
+            replace_product_lines(conn, submission_id, product_id, [{
+                'product_id':    product_id,
+                'unit_id':       unit_id,
+                'quantity':      quantity,
+                'base_quantity': base_qty,
+                'base_unit_id':  base_unit_id,
+            }], user)
+            sync_counts_from_entries(conn, submission_id, user, [product_id],
+                                     mark_changes=True,
+                                     correction_notes=data.get('correction_notes'))
+            refresh_day_counts(conn, sub.location_id, sub.count_date, [product_id])
         return jsonify({'status': 'ok', 'base_quantity': base_qty})
     except AccessError:
         raise
     except Exception as e:
-        logger.error(f'correct_inventory_item: {e}')
+        logger.error(f'correct_inventory_product: {e}')
         return jsonify({'error': str(e)}), 500
 
 
@@ -397,23 +444,32 @@ def create_inventory_submission():
 
 def _parse_entry_lines(raw_entries):
     """
-    Turn the page's entries into {(product_id, unit_id): quantity}.
-    A product can sit in two template sections, so the page may send the same
-    product+unit twice; the last value wins (it is the same box on screen).
+    Turn the page's entries into {(product_id, unit_id): quantity_or_None}.
+
+    One entry is one box on the sheet. A number sets that line; quantity null
+    means the box was cleared and the line is removed. Boxes the page does not
+    mention are left alone. A product can sit in two template sections, so the
+    same box may arrive twice; a number always beats a blank.
     Raises ValueError with a message the user can read.
     """
     lines = {}
     for e in raw_entries or []:
-        pid, uid, qty = e.get('product_id'), e.get('unit_id'), e.get('quantity')
-        if not pid or not uid or qty is None or qty == '':
+        pid, uid = e.get('product_id'), e.get('unit_id')
+        if not pid or not uid:
+            continue
+        key = (int(pid), int(uid))
+        qty = e.get('quantity')
+        if qty is None or qty == '':
+            if 'quantity' in e:
+                lines.setdefault(key, None)      # cleared box
             continue
         try:
-            q = float(qty)
+            q = round(float(qty), 4)             # counts are stored to 4 decimals
         except (TypeError, ValueError):
             raise ValueError(f'"{qty}" is not a number')
         if q < 0:
             raise ValueError('Counts cannot be negative')
-        lines[(int(pid), int(uid))] = q
+        lines[key] = q
     return lines
 
 
@@ -421,15 +477,20 @@ def _parse_entry_lines(raw_entries):
 @staff_required
 def save_inventory_entries(submission_id):
     """
-    Save counts. Every unit line is converted to the product's base unit (read
-    from products, not from the page) and the lines are added into ONE base
-    figure per product in inventory_counts. The lines themselves are kept in
-    inventory_count_entries so the sheet reloads exactly as typed.
-    A line whose unit has no conversion is refused; nothing is saved.
+    Save counts, box by box.
+
+    Every line is converted to the product's base unit (read from products, not
+    from the page). A line whose unit has no conversion is refused and nothing
+    is saved. Changed lines are kept as history.
+
+    Draft:     only the lines are saved. The day's count is not touched.
+    Submitted: this inventory's product totals are rebuilt too, the change is
+               recorded as a correction, and the day's count follows if this
+               inventory is the one holding it.
     """
     data = request.get_json(force=True) or {}
     try:
-        lines = _parse_entry_lines(data.get('entries'))
+        payload = _parse_entry_lines(data.get('entries'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -437,25 +498,46 @@ def save_inventory_entries(submission_id):
     try:
         with get_engine().begin() as conn:
             sub = _load_submission_for_user(conn, submission_id)
-            if not lines:
+            if not payload:
                 return jsonify({'status': 'ok', 'saved': 0})
 
-            product_ids = {pid for pid, _ in lines}
-            unit_ids    = {uid for _, uid in lines}
-            base_units  = load_base_units(conn, product_ids)
-            conv_map    = load_conversion_map(conn, product_ids, unit_ids,
-                                              {b for b in base_units.values() if b})
+            product_ids = list({pid for pid, _ in payload})
+            current = {
+                (r.product_id, r.unit_id): float(r.quantity)
+                for r in conn.execute(text("""
+                    SELECT product_id, unit_id, quantity
+                    FROM inventory_count_entries
+                    WHERE inventory_submission_id = :sid AND superseded_at IS NULL
+                      AND product_id = ANY(:pids)
+                """), {'sid': submission_id, 'pids': product_ids}).fetchall()
+            }
 
-            # ── Convert every line; collect the ones we cannot convert ──────────
-            per_product = {}   # pid -> {uid: (qty, base_qty)}
-            missing     = []
-            for (pid, uid), q in lines.items():
-                base_uid = base_units.get(pid)
-                factor   = base_factor(conv_map, uid, base_uid, pid)
+            # ── What actually changed ──────────────────────────────────────────
+            to_remove = [k for k, q in payload.items() if q is None and k in current]
+            to_write  = {k: q for k, q in payload.items()
+                         if q is not None and current.get(k) != q}
+            if not to_remove and not to_write:
+                return jsonify({'status': 'ok', 'saved': 0})
+
+            # ── Convert the lines being written; refuse if any cannot convert ──
+            write_pids = {pid for pid, _ in to_write}
+            base_units = load_base_units(conn, write_pids)
+            conv_map   = load_conversion_map(conn, write_pids,
+                                             {uid for _, uid in to_write},
+                                             {b for b in base_units.values() if b})
+            new_rows, missing = [], []
+            for (pid, uid), q in to_write.items():
+                factor = base_factor(conv_map, uid, base_units.get(pid), pid)
                 if factor is None:
                     missing.append((pid, uid))
                     continue
-                per_product.setdefault(pid, {})[uid] = (q, q * factor)
+                new_rows.append({
+                    'product_id':    pid,
+                    'unit_id':       uid,
+                    'quantity':      q,
+                    'base_quantity': q * factor,
+                    'base_unit_id':  base_units[pid],
+                })
 
             if missing:
                 names = conn.execute(text("""
@@ -476,84 +558,21 @@ def save_inventory_entries(submission_id):
                     'missing_conversions': [dict(n) for n in names],
                 }), 400
 
-            # ── Lines: supersede changed ones, insert new ones ─────────────────
-            current = conn.execute(text("""
-                SELECT id, product_id, unit_id, quantity
-                FROM inventory_count_entries
-                WHERE inventory_submission_id = :sid AND superseded_at IS NULL
-                  AND product_id = ANY(:pids)
-            """), {'sid': submission_id, 'pids': list(per_product)}).fetchall()
-            current_by_product = {}
-            for r in current:
-                current_by_product.setdefault(r.product_id, {})[r.unit_id] = float(r.quantity)
+            # ── Lines: retire the old ones, write the new ones ─────────────────
+            retire = to_remove + [k for k in to_write if k in current]
+            supersede_line_pairs(conn, submission_id, retire, user)
+            insert_lines(conn, submission_id, new_rows, user)
 
-            changed = []
-            for pid, units in per_product.items():
-                new_set = {uid: q for uid, (q, _) in units.items()}
-                if current_by_product.get(pid) != new_set:
-                    changed.append(pid)
+            changed_pids = list({pid for pid, _ in to_remove} | write_pids)
 
-            if changed:
-                conn.execute(text("""
-                    UPDATE inventory_count_entries
-                    SET superseded_at = NOW(), superseded_by = :user
-                    WHERE inventory_submission_id = :sid AND superseded_at IS NULL
-                      AND product_id = ANY(:pids)
-                """), {'sid': submission_id, 'pids': changed, 'user': user})
-                conn.execute(text("""
-                    INSERT INTO inventory_count_entries (
-                        inventory_submission_id, product_id, unit_id,
-                        quantity, base_quantity, base_unit_id, entered_by
-                    ) VALUES (
-                        :sid, :pid, :uid, :qty, :base_qty, :base_uid, :user
-                    )
-                """), [
-                    {'sid': submission_id, 'pid': pid, 'uid': uid, 'qty': q,
-                     'base_qty': bq, 'base_uid': base_units[pid], 'user': user}
-                    for pid in changed
-                    for uid, (q, bq) in per_product[pid].items()
-                ])
+            # ── Submitted inventory: its totals and the day's count follow ─────
+            if sub.status == 'submitted':
+                adopt_day_counts(conn, sub.location_id, sub.count_date)
+                sync_counts_from_entries(conn, submission_id, user, changed_pids,
+                                         mark_changes=True)
+                refresh_day_counts(conn, sub.location_id, sub.count_date, changed_pids)
 
-            # ── The day's figure: one base total per product ───────────────────
-            # entered_* holds the line when there is exactly one; with several
-            # units it holds the base total (the lines live in the entries table).
-            rows = []
-            for pid, units in per_product.items():
-                total = sum(bq for _, bq in units.values())
-                if len(units) == 1:
-                    (uid, (q, _)), = units.items()
-                else:
-                    uid, q = base_units[pid], total
-                rows.append({
-                    'inv_sub_id':       submission_id,
-                    'location_id':      sub.location_id,
-                    'product_id':       pid,
-                    'count_date':       sub.count_date,
-                    'base_quantity':    total,
-                    'base_unit_id':     base_units[pid],
-                    'entered_quantity': q,
-                    'entered_unit_id':  uid,
-                    'entered_by':       user,
-                })
-            conn.execute(text("""
-                INSERT INTO inventory_counts (
-                    inventory_submission_id, location_id, product_id,
-                    count_date, base_quantity, base_unit_id,
-                    entered_quantity, entered_unit_id, entered_by
-                ) VALUES (
-                    :inv_sub_id, :location_id, :product_id,
-                    :count_date, :base_quantity, :base_unit_id,
-                    :entered_quantity, :entered_unit_id, :entered_by
-                )
-                ON CONFLICT (location_id, product_id, count_date) DO UPDATE SET
-                    base_quantity    = EXCLUDED.base_quantity,
-                    base_unit_id     = EXCLUDED.base_unit_id,
-                    entered_quantity = EXCLUDED.entered_quantity,
-                    entered_unit_id  = EXCLUDED.entered_unit_id,
-                    entered_by       = EXCLUDED.entered_by
-            """), rows)
-
-        return jsonify({'status': 'ok', 'saved': len(per_product)})
+        return jsonify({'status': 'ok', 'saved': len(changed_pids)})
     except AccessError:
         raise
     except Exception as e:
@@ -564,12 +583,18 @@ def save_inventory_entries(submission_id):
 @bp.route('/inventory-submissions/<int:submission_id>/submit', methods=['POST'])
 @staff_required
 def submit_inventory(submission_id):
-    """Submit a manual inventory."""
+    """
+    Submit a manual inventory. This is the moment its counts start to matter:
+    its product totals are built from the saved lines, and it becomes the day's
+    count for every product it counted (latest submitted inventory wins).
+    """
+    user = g.user.get('email')
     try:
         with get_engine().begin() as conn:
             sub = _load_submission_for_user(conn, submission_id)
             if sub.status == 'submitted':
                 return jsonify({'error': 'Already submitted'}), 400
+            adopt_day_counts(conn, sub.location_id, sub.count_date)
 
             conn.execute(text("""
                 UPDATE inventory_submissions SET
@@ -578,9 +603,13 @@ def submit_inventory(submission_id):
                     submitted_at = NOW(),
                     updated_at   = NOW()
                 WHERE id = :id
-            """), {'id': submission_id, 'submitted_by': g.user.get('email')})
+            """), {'id': submission_id, 'submitted_by': user})
 
-        return jsonify({'status': 'submitted'})
+            sync_counts_from_entries(conn, submission_id, user, mark_changes=False)
+            product_ids = _counted_product_ids(conn, submission_id)
+            refresh_day_counts(conn, sub.location_id, sub.count_date, product_ids)
+
+        return jsonify({'status': 'submitted', 'item_count': len(product_ids)})
     except AccessError:
         raise
     except Exception as e:
@@ -588,24 +617,39 @@ def submit_inventory(submission_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _counted_product_ids(conn, submission_id):
+    """Products this inventory has a total for, plus any day's count it holds."""
+    rows = conn.execute(text("""
+        SELECT product_id FROM inventory_submission_counts WHERE inventory_submission_id = :id
+        UNION
+        SELECT product_id FROM inventory_counts WHERE inventory_submission_id = :id
+    """), {'id': submission_id}).fetchall()
+    return [r.product_id for r in rows]
+
+
 @bp.route('/inventory-submissions/<int:submission_id>', methods=['DELETE'])
 @gm_or_admin_required
 def delete_inventory_submission(submission_id):
     """
-    Delete an inventory header. Its saved lines (inventory_count_entries) go with it.
-    The day's counts in inventory_counts are only detached, as before; what happens
-    to them is decided in phase 2 (fall back to the previous inventory that day).
+    Delete an inventory with its lines and product totals.
+    Each day's count it was holding goes back to the next most recent submitted
+    inventory for that day, or is removed when there is none.
     """
     try:
         with get_engine().begin() as conn:
-            _load_submission_for_user(conn, submission_id)
+            sub = _load_submission_for_user(conn, submission_id)
+            adopt_day_counts(conn, sub.location_id, sub.count_date)
+            product_ids = _counted_product_ids(conn, submission_id)
+
             conn.execute(text("""
-                UPDATE inventory_counts SET inventory_submission_id = NULL
-                WHERE inventory_submission_id = :id
+                DELETE FROM inventory_counts WHERE inventory_submission_id = :id
             """), {'id': submission_id})
+            # Lines and product totals go with the header (ON DELETE CASCADE).
             conn.execute(text("""
                 DELETE FROM inventory_submissions WHERE id = :id
             """), {'id': submission_id})
+
+            refresh_day_counts(conn, sub.location_id, sub.count_date, product_ids)
         return jsonify({'status': 'ok'})
     except AccessError:
         raise

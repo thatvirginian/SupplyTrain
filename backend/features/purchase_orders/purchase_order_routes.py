@@ -160,7 +160,7 @@ def purchase_order_pdf(po_id):
         if not po:
             return jsonify({'error': 'Order not found'}), 404
 
-        # Get items with par snapshot from inventory_counts via sheet_submissions
+        # Get items with the par / on-hand snapshot of the order sheet inventory that created them
         items_raw = conn.execute(text("""
             SELECT
                 poi.id,
@@ -193,20 +193,35 @@ def purchase_order_pdf(po_id):
             LEFT JOIN units u                ON poi.order_unit_id   = u.id
             LEFT JOIN comm_order_sections cs ON poi.comm_section_id = cs.id
             LEFT JOIN LATERAL (
-                SELECT ic2.par_qty, ic2.par_unit_id,
-                       ic2.base_quantity, ic2.base_unit_id
-                FROM inventory_counts ic2
-                JOIN inventory_submissions invs
-                    ON ic2.inventory_submission_id = invs.id
-                WHERE ic2.product_id = poi.product_id
-                AND (
-                    -- Direct match via sheet_submission_id
-                    (:sheet_submission_id IS NOT NULL AND invs.sheet_submission_id = :sheet_submission_id)
-                    OR
-                    -- Fallback: match by location + date for older orders
-                    (:sheet_submission_id IS NULL AND ic2.location_id = :location_id AND ic2.count_date = :order_date)
-                )
-                ORDER BY ic2.id DESC
+                -- What the order sheet's inventory counted for this product
+                -- (inventory_submission_counts). These rows stay with their
+                -- inventory, so a later recount that day does not change them.
+                -- Last resort for orders older than that table, the count of the day.
+                SELECT s.par_qty, s.par_unit_id, s.base_quantity, s.base_unit_id
+                FROM (
+                    SELECT c.par_qty, c.par_unit_id, c.base_quantity, c.base_unit_id,
+                           1 AS source_rank, c.id AS row_id
+                    FROM inventory_submission_counts c
+                    JOIN inventory_submissions invs
+                        ON c.inventory_submission_id = invs.id
+                    WHERE c.product_id = poi.product_id
+                    AND (
+                        -- Direct match via sheet_submission_id
+                        (:sheet_submission_id IS NOT NULL AND invs.sheet_submission_id = :sheet_submission_id)
+                        OR
+                        -- Fallback: match by location + date for older orders
+                        (:sheet_submission_id IS NULL AND invs.location_id = :location_id AND invs.count_date = :order_date)
+                    )
+                    UNION ALL
+                    SELECT ic2.par_qty, ic2.par_unit_id, ic2.base_quantity, ic2.base_unit_id,
+                           2 AS source_rank, ic2.id AS row_id
+                    FROM inventory_counts ic2
+                    WHERE ic2.product_id  = poi.product_id
+                      AND ic2.location_id = :location_id
+                      AND ic2.count_date  = :order_date
+                      AND :sheet_submission_id IS NULL
+                ) s
+                ORDER BY s.source_rank, (s.par_qty IS NOT NULL) DESC, s.row_id DESC
                 LIMIT 1
             ) ic ON TRUE
             LEFT JOIN units pu ON ic.par_unit_id  = pu.id

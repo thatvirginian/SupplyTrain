@@ -120,7 +120,9 @@ export default function InventoryHistoryPage() {
                   </tr>
                 ) : submissions.map(s => (
                   <tr key={s.id} className="row-link"
-                    onClick={() => navigate(`/inventory/${s.id}`)}>
+                    onClick={() => navigate(
+                      s.status === 'draft' ? `/inventory/entry/${s.id}` : `/inventory/${s.id}`
+                    )}>
                     <td>{formatDate(s.count_date)}</td>
                     <td style={{ color: 'var(--text-secondary)' }}>{s.location_name}</td>
                     <td>

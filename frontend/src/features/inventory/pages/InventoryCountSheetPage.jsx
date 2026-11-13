@@ -70,13 +70,15 @@ export default function InventoryCountSheetPage() {
         countUnits.forEach(cu => {
           const key = `${item.product_id}_${cu.unit_id}`
           const qty = entries[key]
-          if (qty !== undefined && qty !== '') {
-            entryList.push({
-              product_id:   item.product_id,
-              quantity:     parseFloat(qty),
-              unit_id:      cu.unit_id,
-            })
-          }
+          const num = (qty === undefined || qty === '') ? null : parseFloat(qty)
+          if (num !== null && isNaN(num)) return          // not a number: leave that line alone
+          // One entry per box. null = the box is blank, so the server removes
+          // that line if one was saved (this is how a miscount gets cleared).
+          entryList.push({
+            product_id: item.product_id,
+            unit_id:    cu.unit_id,
+            quantity:   num,
+          })
         })
       })
     })

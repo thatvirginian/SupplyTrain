@@ -58,6 +58,18 @@ export default function InventoryDetailPage() {
     return `${parseFloat(qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${unit || ''}`
   }
 
+  // The lines this inventory saved for a product, exactly as counted
+  const linesFor = (item) =>
+    (inventory?.entries || []).filter(e => e.product_id === item.product_id)
+
+  // "2 Case + 5 lb" when the count was not simply typed in the base unit
+  const countedAs = (item) => {
+    const lines = linesFor(item)
+    if (lines.length === 0) return ''
+    if (lines.length === 1 && lines[0].unit_id === item.base_unit_id) return ''
+    return lines.map(l => formatQty(l.quantity, l.unit_name).trim()).join(' + ')
+  }
+
   // Units a correction can be made in: the base unit, plus any count unit the
   // template offers for this product (those are guaranteed to have a conversion).
   const unitOptionsFor = (item) => {
@@ -68,11 +80,15 @@ export default function InventoryDetailPage() {
         if (!opts.some(o => o.unit_id === cu.unit_id)) opts.push({ unit_id: cu.unit_id, unit_name: cu.unit_name })
       })
     }))
+    // ...and the units it was actually counted in (order sheet inventories have no template)
+    linesFor(item).forEach(l => {
+      if (!opts.some(o => o.unit_id === l.unit_id)) opts.push({ unit_id: l.unit_id, unit_name: l.unit_name })
+    })
     return opts
   }
 
   const startEditing = (item) => {
-    setEditingItem(item.id)
+    setEditingItem(item.product_id)
     setEditQty(item.base_quantity != null ? parseFloat(item.base_quantity) : '')
     setEditUnitId(String(item.base_unit_id))
     setCorrectionNotes('')
@@ -82,7 +98,7 @@ export default function InventoryDetailPage() {
     if (editQty === '' || isNaN(parseFloat(editQty))) return
     setSaving(true)
     try {
-      await axios.put(`/api/inventory-submissions/${id}/items/${item.id}`, {
+      await axios.put(`/api/inventory-submissions/${id}/products/${item.product_id}`, {
         quantity:         parseFloat(editQty),
         unit_id:          parseInt(editUnitId),
         correction_notes: correctionNotes || null,
@@ -100,7 +116,12 @@ export default function InventoryDetailPage() {
   }
 
   const handleDelete = async () => {
-    if (!confirm('Delete this inventory? This cannot be undone.')) return
+    const fromSheet = inventory?.source === 'count_sheet'
+    const message = fromSheet
+      ? 'Delete this inventory? It came from an order sheet: its purchase orders will no longer show Par and On Hand. ' +
+        "The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
+      : "Delete this inventory? The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
+    if (!confirm(message)) return
     try {
       await axios.delete(`/api/inventory-submissions/${id}`)
       navigate('/inventory/history')
@@ -112,12 +133,14 @@ export default function InventoryDetailPage() {
   const handleExportCSV = () => {
     if (!inventory) return
     const rows = [
-      ['Product', 'Category', 'Quantity', 'Base Unit', 'Par', 'Par Unit', 'Vendor Code'],
+      ['Product', 'Category', 'Quantity', 'Base Unit', 'Counted As', "Day's Count", 'Par', 'Par Unit', 'Vendor Code'],
       ...(inventory.items || []).map(i => [
         i.product_name,
         i.category || '',
         i.base_quantity != null ? parseFloat(i.base_quantity) : '',
         i.base_unit || '',
+        countedAs(i) || formatQty(i.base_quantity, i.base_unit).trim(),
+        i.is_day_count ? 'Yes' : 'No',
         i.par_qty != null ? parseFloat(i.par_qty) : '',
         i.par_unit || '',
         i.vendor_code || '',
@@ -138,6 +161,9 @@ export default function InventoryDetailPage() {
   if (!inventory) return null
 
   const isFromCountSheet = inventory.source === 'count_sheet'
+  const isSubmitted      = inventory.status === 'submitted'
+  // Corrections are for submitted inventories; a draft is still edited on its entry sheet
+  const canCorrect       = isManager && isSubmitted
 
   return (
     <div className="page">
@@ -205,13 +231,19 @@ export default function InventoryDetailPage() {
           <div key={category}>
             <div className="inv-detail-category">{category}</div>
             {items.map(item => (
-              <div key={item.id} className="inv-detail-row">
+              <div key={item.product_id} className="inv-detail-row">
                 <div className="inv-detail-name">
                   <span className="inv-product-name">{item.product_name}</span>
                   {item.corrected_by && (
                     <span className="inv-corrected-badge"
                       title={`Corrected by ${item.corrected_by}${item.correction_notes ? ' — ' + item.correction_notes : ''}`}>
                       corrected
+                    </span>
+                  )}
+                  {isSubmitted && item.is_day_count === false && (
+                    <span className="inv-replaced-badge"
+                      title="A later inventory that day also counted this product. This number is kept here, but the later one is the day's count.">
+                      replaced by later count
                     </span>
                   )}
                   {item.vendor_code && (
@@ -222,7 +254,7 @@ export default function InventoryDetailPage() {
                 </div>
 
                 <div className="inv-detail-qty">
-                  {editingItem === item.id ? (
+                  {editingItem === item.product_id ? (
                     <div className="inv-edit-wrap">
                       <input className="input" type="number" step="any" min="0"
                         value={editQty} autoFocus style={{ width: '90px' }}
@@ -245,13 +277,16 @@ export default function InventoryDetailPage() {
                     </div>
                   ) : (
                     <span className="inv-qty-value"
-                      style={{ cursor: isManager ? 'pointer' : 'default' }}
+                      style={{ cursor: canCorrect ? 'pointer' : 'default' }}
                       onClick={() => {
-                        if (!isManager) return
+                        if (!canCorrect) return
                         startEditing(item)
                       }}
-                      title={isManager ? 'Click to correct' : ''}>
+                      title={canCorrect ? 'Click to correct' : ''}>
                       {formatQty(item.base_quantity, item.base_unit)}
+                      {countedAs(item) && (
+                        <span className="inv-counted-as">{countedAs(item)}</span>
+                      )}
                       {item.original_quantity != null && (
                         <span className="inv-original-qty">
                           was {formatQty(item.original_quantity, item.base_unit)}
@@ -272,7 +307,7 @@ export default function InventoryDetailPage() {
 
                 {isManager && (
                   <div className="inv-detail-actions no-print">
-                    {editingItem === item.id ? (
+                    {editingItem === item.product_id ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
                         <input className="input" placeholder="Reason (optional)"
                           value={correctionNotes} style={{ fontSize: '0.75rem', padding: '0.2rem 0.4rem' }}

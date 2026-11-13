@@ -129,3 +129,25 @@
   .inv-detail-par     { display: none; }
   .inv-detail-actions { display: none; }
 }
+
+/* The units a count was typed in, under the base-unit total */
+.inv-counted-as {
+  display:     block;
+  font-size:   0.7rem;
+  color:       var(--text-muted);
+  font-weight: 400;
+}
+
+/* This inventory's number is kept, but a later inventory holds the day's count */
+.inv-replaced-badge {
+  display:        inline-block;
+  align-self:     flex-start;
+  padding:        0.1rem 0.35rem;
+  background:     rgba(148,163,184,0.18);
+  color:          var(--text-muted);
+  border-radius:  var(--radius-sm);
+  font-size:      0.6rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  white-space:    nowrap;
+}

@@ -24,6 +24,9 @@ from core.auth import (
     admin_required, store_required, _get_user_location,
 )
 from core.database import get_engine
+from features.inventory.inventory_count_service import (
+    adopt_day_counts, copy_sheet_entries, refresh_day_counts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1349,50 +1352,44 @@ def submit_sheet(submission_id):
             })
             inv_submission_id = inv_sub_result.fetchone().id
 
-            # ── BATCH: insert all inventory_counts ───────────────────────────
+            # ── BATCH: what this order sheet counted, per product ────────────
+            # Goes to inventory_submission_counts (this inventory's own rows, with
+            # the par / order / vendor snapshot the purchase order reads back).
+            # The day's count (inventory_counts) is picked afterwards by
+            # refresh_day_counts: latest submitted inventory wins, per product.
             inv_rows = [e for e in entries if e['total_base_quantity'] is not None]
             if inv_rows:
+                adopt_day_counts(conn, sub['location_id'], sub['count_date'])
                 conn.execute(text("""
-                    INSERT INTO inventory_counts (
-                        submission_id, inventory_submission_id,
-                        location_id, product_id, count_date,
+                    INSERT INTO inventory_submission_counts (
+                        inventory_submission_id, product_id,
                         base_quantity, base_unit_id,
                         vendor_item_id, vendor_id, vendor_code,
                         par_qty, par_unit_id, par_base_qty,
                         order_qty, order_unit_id, entered_by
                     ) VALUES (
-                        :submission_id, :inv_submission_id,
-                        :location_id, :product_id, :count_date,
+                        :inv_submission_id, :product_id,
                         :base_quantity, :base_unit_id,
                         :vendor_item_id, :vendor_id, :vendor_code,
                         :par_qty, :par_unit_id, :par_base_qty,
                         :order_qty, :order_unit_id, :entered_by
                     )
-                    ON CONFLICT (location_id, product_id, count_date) DO UPDATE SET
-                        inventory_submission_id = EXCLUDED.inventory_submission_id,
-                        submission_id           = EXCLUDED.submission_id,
-                        base_quantity           = EXCLUDED.base_quantity,
-                        base_unit_id            = EXCLUDED.base_unit_id,
-                        vendor_item_id          = EXCLUDED.vendor_item_id,
-                        vendor_id               = EXCLUDED.vendor_id,
-                        vendor_code             = EXCLUDED.vendor_code,
-                        par_qty                 = EXCLUDED.par_qty,
-                        par_unit_id             = EXCLUDED.par_unit_id,
-                        par_base_qty            = EXCLUDED.par_base_qty,
-                        order_qty               = EXCLUDED.order_qty,
-                        order_unit_id           = EXCLUDED.order_unit_id,
-                        -- The order sheet's lines live in sheet_entries; clear any
-                        -- earlier manual entry so the row never contradicts itself.
-                        entered_quantity        = NULL,
-                        entered_unit_id         = NULL,
-                        entered_by              = EXCLUDED.entered_by
+                    ON CONFLICT (inventory_submission_id, product_id) DO UPDATE SET
+                        base_quantity  = EXCLUDED.base_quantity,
+                        base_unit_id   = EXCLUDED.base_unit_id,
+                        vendor_item_id = EXCLUDED.vendor_item_id,
+                        vendor_id      = EXCLUDED.vendor_id,
+                        vendor_code    = EXCLUDED.vendor_code,
+                        par_qty        = EXCLUDED.par_qty,
+                        par_unit_id    = EXCLUDED.par_unit_id,
+                        par_base_qty   = EXCLUDED.par_base_qty,
+                        order_qty      = EXCLUDED.order_qty,
+                        order_unit_id  = EXCLUDED.order_unit_id,
+                        entered_by     = EXCLUDED.entered_by
                 """), [
                     {
-                        'submission_id':      submission_id,
                         'inv_submission_id':  inv_submission_id,
-                        'location_id':        sub['location_id'],
                         'product_id':         e['product_id'],
-                        'count_date':         sub['count_date'],
                         'base_quantity':      float(e['total_base_quantity']),
                         'base_unit_id':       e['base_unit_id'],
                         'vendor_item_id':     e.get('vendor_item_id'),
@@ -1407,6 +1404,14 @@ def submit_sheet(submission_id):
                     }
                     for e in inv_rows
                 ])
+
+                # The lines as counted (units), so the inventory can show them.
+                copy_sheet_entries(conn, inv_submission_id, submission_id, g.user.get('email'))
+
+                # This inventory is the newest for the day: it takes the day's
+                # count for every product it counted.
+                refresh_day_counts(conn, sub['location_id'], sub['count_date'],
+                                   [e['product_id'] for e in inv_rows])
 
             # ── Lock the submission ───────────────────────────────────────────
             logger.info(f'submit_sheet [{submission_id}] inventory counts: {time.time()-t5:.2f}s')
