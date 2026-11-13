@@ -21,6 +21,7 @@ import logging
 
 from core.auth import (
     gm_or_admin_required, staff_required, _is_admin, _get_user_location,
+    can_edit_submitted_inventory, inventory_edit_required,
 )
 from core.database import get_engine
 from core.units import load_base_units, load_conversion_map, base_factor
@@ -147,6 +148,66 @@ def list_inventory_submissions():
     })
 
 
+def _load_template_sections(conn, inventory_template_id, sheet_template_id):
+    """
+    Sections -> products -> count units, in the same shape for both layouts:
+      [{id, name, sort_order, items: [{id, product_id, product_name, base_unit,
+                                       base_unit_id, count_units: [{unit_id, unit_name}]}]}]
+    Manual inventories use their inventory template; order sheet inventories use
+    the order sheet template the sheet was filled in on. Empty list when neither.
+    """
+    if inventory_template_id:
+        tables = ('inventory_template_sections', 'inventory_template_items',
+                  'inventory_template_item_units', inventory_template_id)
+    elif sheet_template_id:
+        tables = ('sheet_sections', 'sheet_section_items',
+                  'sheet_section_item_units', sheet_template_id)
+    else:
+        return []
+    section_table, item_table, unit_table, template_id = tables
+
+    sections = conn.execute(text(f"""
+        SELECT sec.id, sec.name, sec.sort_order,
+            json_agg(
+                json_build_object(
+                    'id',           itm.id,
+                    'product_id',   itm.product_id,
+                    'product_name', p.name,
+                    'base_unit',    u.name,
+                    'base_unit_id', p.base_unit_id
+                ) ORDER BY itm.sort_order
+            ) FILTER (WHERE itm.id IS NOT NULL) AS items
+        FROM {section_table} sec
+        LEFT JOIN {item_table} itm ON itm.section_id = sec.id
+        LEFT JOIN products p ON itm.product_id = p.id
+        LEFT JOIN units u    ON p.base_unit_id = u.id
+        WHERE sec.template_id = :template_id
+        GROUP BY sec.id
+        ORDER BY sec.sort_order
+    """), {'template_id': template_id}).mappings().all()
+
+    item_ids = [i['id'] for sec in sections for i in (sec['items'] or [])]
+    count_units_map = {}
+    if item_ids:
+        for cu in conn.execute(text(f"""
+            SELECT iu.id, iu.item_id, iu.unit_id, iu.sort_order,
+                   u.name AS unit_name
+            FROM {unit_table} iu
+            JOIN units u ON iu.unit_id = u.id
+            WHERE iu.item_id = ANY(:item_ids)
+            ORDER BY iu.item_id, iu.sort_order
+        """), {'item_ids': item_ids}).mappings().all():
+            count_units_map.setdefault(cu['item_id'], []).append(dict(cu))
+
+    result = []
+    for sec in sections:
+        sd = dict(sec)
+        for item in (sd.get('items') or []):
+            item['count_units'] = count_units_map.get(item['id'], [])
+        result.append(sd)
+    return result
+
+
 @bp.route('/inventory-submissions/<int:submission_id>', methods=['GET'])
 @staff_required
 def get_inventory_submission(submission_id):
@@ -160,10 +221,14 @@ def get_inventory_submission(submission_id):
                 ivs.sheet_submission_id, ivs.template_id,
                 ivs.created_at, ivs.updated_at,
                 l.location_name,
-                it.name AS template_name
+                -- Manual: the inventory template. Order sheet: the order sheet template.
+                COALESCE(it.name, st.name) AS template_name,
+                ss.template_id AS sheet_template_id
             FROM inventory_submissions ivs
             LEFT JOIN locations l            ON l.store_guid::text = ivs.location_id
             LEFT JOIN inventory_templates it ON ivs.template_id    = it.id
+            LEFT JOIN sheet_submissions ss   ON ss.id = ivs.sheet_submission_id
+            LEFT JOIN sheet_templates st     ON st.id = ss.template_id
             WHERE ivs.id = :id
         """), {'id': submission_id}).mappings().fetchone()
 
@@ -234,57 +299,10 @@ def get_inventory_submission(submission_id):
                 ORDER BY cat.name, p.name
             """), {'id': submission_id}).mappings().all()
 
-        # For manual inventories fetch template sections
-        template_sections = []
-        if sub['template_id']:
-            sections = conn.execute(text("""
-                SELECT its.id, its.name, its.sort_order,
-                    json_agg(
-                        json_build_object(
-                            'id',           iti.id,
-                            'product_id',   iti.product_id,
-                            'product_name', p.name,
-                            'base_unit',    u.name,
-                            'base_unit_id', p.base_unit_id
-                        ) ORDER BY iti.sort_order
-                    ) FILTER (WHERE iti.id IS NOT NULL) AS items
-                FROM inventory_template_sections its
-                LEFT JOIN inventory_template_items iti ON iti.section_id = its.id
-                LEFT JOIN products p ON iti.product_id = p.id
-                LEFT JOIN units u    ON p.base_unit_id = u.id
-                WHERE its.template_id = :template_id
-                GROUP BY its.id
-                ORDER BY its.sort_order
-            """), {'template_id': sub['template_id']}).mappings().all()
-
-            # Fetch count units per item
-            item_ids = []
-            for s in sections:
-                if s['items']:
-                    item_ids.extend([i['id'] for i in s['items']])
-
-            count_units_map = {}
-            if item_ids:
-                cu_rows = conn.execute(text("""
-                    SELECT itiu.id, itiu.item_id, itiu.unit_id, itiu.sort_order,
-                           u.name AS unit_name
-                    FROM inventory_template_item_units itiu
-                    JOIN units u ON itiu.unit_id = u.id
-                    WHERE itiu.item_id = ANY(:item_ids)
-                    ORDER BY itiu.item_id, itiu.sort_order
-                """), {'item_ids': item_ids}).mappings().all()
-                for cu in cu_rows:
-                    iid = cu['item_id']
-                    if iid not in count_units_map:
-                        count_units_map[iid] = []
-                    count_units_map[iid].append(dict(cu))
-
-            for s in sections:
-                sd = dict(s)
-                if sd.get('items'):
-                    for item in sd['items']:
-                        item['count_units'] = count_units_map.get(item['id'], [])
-                template_sections.append(sd)
+        # The layout the inventory was counted on: its inventory template, or
+        # for an order sheet inventory, the order sheet's template.
+        template_sections = _load_template_sections(
+            conn, sub['template_id'], sub['sheet_template_id'])
 
         # The lines this inventory saved, exactly as typed (current rows only)
         entry_rows = conn.execute(text("""
@@ -297,18 +315,45 @@ def get_inventory_submission(submission_id):
             ORDER BY e.product_id, e.unit_id
         """), {'id': submission_id}).mappings().all()
 
+    # Products this inventory counted that are not on its template (any more):
+    # list them in their own section so they can still be seen and edited.
+    on_layout = {i['product_id'] for sec in template_sections for i in (sec.get('items') or [])}
+    extra = {}
+    for e in entry_rows:
+        if e['product_id'] in on_layout:
+            continue
+        x = extra.setdefault(e['product_id'], {
+            'id': None, 'product_id': e['product_id'], 'count_units': [],
+        })
+        if not any(cu['unit_id'] == e['unit_id'] for cu in x['count_units']):
+            x['count_units'].append({'unit_id': e['unit_id'], 'unit_name': e['unit_name']})
+    for i in items:
+        if i['product_id'] in extra:
+            extra[i['product_id']].update({
+                'product_name': i['product_name'],
+                'base_unit':    i['base_unit'],
+                'base_unit_id': i['base_unit_id'],
+            })
+    if extra:
+        template_sections = template_sections + [{
+            'id': None, 'name': 'Other counted items', 'sort_order': 9999,
+            'items': sorted(extra.values(), key=lambda x: x.get('product_name') or ''),
+        }]
+
     result = dict(sub)
     result['items']             = [dict(i) for i in items]
     result['template_sections'] = template_sections
     result['entries']           = [dict(e) for e in entry_rows]
+    # Whether this user may change the counts once submitted (roles in core/auth.py)
+    result['can_edit']          = can_edit_submitted_inventory()
     return jsonify(result)
 
 
 @bp.route('/inventory-submissions/<int:submission_id>/products/<int:product_id>', methods=['PUT'])
-@gm_or_admin_required
+@inventory_edit_required
 def correct_inventory_product(submission_id, product_id):
     """
-    Admin/GM correct one product's count on a submitted inventory.
+    Correct one product's count on a submitted inventory (INVENTORY_EDIT_ROLES).
     Body: {quantity, unit_id, correction_notes}  (correct in any unit with a conversion)
        or {base_quantity, correction_notes}      (correct directly in base units)
 
@@ -484,7 +529,8 @@ def save_inventory_entries(submission_id):
     is saved. Changed lines are kept as history.
 
     Draft:     only the lines are saved. The day's count is not touched.
-    Submitted: this inventory's product totals are rebuilt too, the change is
+    Submitted: only INVENTORY_EDIT_ROLES (core/auth.py) may save. This
+               inventory's product totals are rebuilt too, the change is
                recorded as a correction, and the day's count follows if this
                inventory is the one holding it.
     """
@@ -498,6 +544,8 @@ def save_inventory_entries(submission_id):
     try:
         with get_engine().begin() as conn:
             sub = _load_submission_for_user(conn, submission_id)
+            if sub.status == 'submitted' and not can_edit_submitted_inventory():
+                return jsonify({'error': 'This inventory has been submitted. Only an admin can change it.'}), 403
             if not payload:
                 return jsonify({'status': 'ok', 'saved': 0})
 

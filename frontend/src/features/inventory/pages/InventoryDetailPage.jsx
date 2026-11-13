@@ -118,7 +118,7 @@ export default function InventoryDetailPage() {
   const handleDelete = async () => {
     const fromSheet = inventory?.source === 'count_sheet'
     const message = fromSheet
-      ? 'Delete this inventory? It came from an order sheet: its purchase orders will no longer show Par and On Hand. ' +
+      ? 'Delete this inventory? Its purchase orders are not affected. ' +
         "The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
       : "Delete this inventory? The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
     if (!confirm(message)) return
@@ -162,8 +162,9 @@ export default function InventoryDetailPage() {
 
   const isFromCountSheet = inventory.source === 'count_sheet'
   const isSubmitted      = inventory.status === 'submitted'
-  // Corrections are for submitted inventories; a draft is still edited on its entry sheet
-  const canCorrect       = isManager && isSubmitted
+  // Changing a submitted inventory: the server decides who may (core/auth.py,
+  // INVENTORY_EDIT_ROLES) and says so in can_edit. A draft is edited on its entry sheet.
+  const canCorrect       = isSubmitted && !!inventory.can_edit
 
   return (
     <div className="page">
@@ -188,6 +189,12 @@ export default function InventoryDetailPage() {
             <button className="btn btn-secondary"
               onClick={() => navigate(`/count-sheet/${inventory.sheet_submission_id}`)}>
               View Count Sheet
+            </button>
+          )}
+          {canCorrect && (
+            <button className="btn btn-primary"
+              onClick={() => navigate(`/inventory/entry/${inventory.id}`)}>
+              Edit Counts
             </button>
           )}
           <button className="btn btn-secondary" onClick={handleExportCSV}>CSV</button>

@@ -144,7 +144,11 @@ export default function InventoryCountSheetPage() {
   if (error)       return <div className="sheet-error">{error}</div>
   if (!submission) return null
 
-  const isSubmitted = submission.status === 'submitted' && !isAdmin
+  // Submitted inventories are read-only unless the server says this user may
+  // change them (the roles live in core/auth.py, INVENTORY_EDIT_ROLES).
+  const isSubmittedInv = submission.status === 'submitted'
+  const isSubmitted    = isSubmittedInv && !submission.can_edit   // read-only
+  const isCorrecting   = isSubmittedInv && submission.can_edit
 
   // Use template sections if available, otherwise group items by category
   const sections = submission.template_sections || []
@@ -168,13 +172,15 @@ export default function InventoryCountSheetPage() {
             {saved && <span className="sheet-saved">Saved ✓</span>}
             <button className="sheet-btn sheet-btn-secondary"
               onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Saving...' : isCorrecting ? 'Save Changes' : 'Save'}
             </button>
-            <button className="sheet-btn sheet-btn-primary"
-              onClick={handleSubmit} disabled={submitting || saving}>
-              {submitting ? 'Submitting...' : 'Submit'}
-            </button>
-            {isManager && (
+            {!isSubmittedInv && (
+              <button className="sheet-btn sheet-btn-primary"
+                onClick={handleSubmit} disabled={submitting || saving}>
+                {submitting ? 'Submitting...' : 'Submit'}
+              </button>
+            )}
+            {isManager && !isSubmittedInv && (
               <button className="sheet-btn sheet-btn-secondary"
                 style={{ color: 'var(--error)', borderColor: 'var(--error)' }}
                 onClick={handleDelete}>Delete</button>
@@ -183,7 +189,7 @@ export default function InventoryCountSheetPage() {
         )}
       </div>
 
-      {submission.status === 'submitted' && isAdmin && (
+      {isCorrecting && (
         <div style={{
           background: 'rgba(245,158,11,0.1)',
           borderBottom: '1px solid rgba(245,158,11,0.3)',
@@ -192,7 +198,7 @@ export default function InventoryCountSheetPage() {
           color: 'var(--warning)',
           textAlign: 'center',
         }}>
-          Admin view — this inventory has been submitted
+          Editing a submitted inventory. Saved changes are recorded as corrections and the earlier values are kept.
         </div>
       )}
 
@@ -291,12 +297,14 @@ export default function InventoryCountSheetPage() {
         <div className="sheet-footer">
           <button className="sheet-btn sheet-btn-secondary sheet-btn-full"
             onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Draft'}
+            {saving ? 'Saving...' : isCorrecting ? 'Save Changes' : 'Save Draft'}
           </button>
-          <button className="sheet-btn sheet-btn-primary sheet-btn-full"
-            onClick={handleSubmit} disabled={submitting || saving}>
-            {submitting ? 'Submitting...' : 'Submit'}
-          </button>
+          {!isSubmittedInv && (
+            <button className="sheet-btn sheet-btn-primary sheet-btn-full"
+              onClick={handleSubmit} disabled={submitting || saving}>
+              {submitting ? 'Submitting...' : 'Submit'}
+            </button>
+          )}
         </div>
       )}
     </div>

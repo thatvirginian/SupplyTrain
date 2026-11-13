@@ -160,7 +160,7 @@ def purchase_order_pdf(po_id):
         if not po:
             return jsonify({'error': 'Order not found'}), 404
 
-        # Get items with the par / on-hand snapshot of the order sheet inventory that created them
+        # Get items with par and on hand as the order was made
         items_raw = conn.execute(text("""
             SELECT
                 poi.id,
@@ -177,7 +177,7 @@ def purchase_order_pdf(po_id):
                 u.name  AS order_unit,
                 cs.name AS section_name,
                 cs.sort_order AS section_sort,
-                -- Par from inventory_counts snapshot
+                -- Par and on hand as the order was made (see the lookup below)
                 ic.par_qty,
                 pu.name  AS par_unit,
                 -- On hand: convert base_quantity back to order unit if possible
@@ -193,18 +193,29 @@ def purchase_order_pdf(po_id):
             LEFT JOIN units u                ON poi.order_unit_id   = u.id
             LEFT JOIN comm_order_sections cs ON poi.comm_section_id = cs.id
             LEFT JOIN LATERAL (
-                -- What the order sheet's inventory counted for this product
-                -- (inventory_submission_counts). These rows stay with their
-                -- inventory, so a later recount that day does not change them.
-                -- Last resort for orders older than that table, the count of the day.
+                -- Par and on hand AS THE ORDER WAS MADE.
+                -- 1. The order line's own copy, saved when the order sheet was
+                --    submitted (on_hand / par_level). Never changes afterwards.
+                -- 2. Lines added to an order by hand, and orders made before that
+                --    copy existed: the order sheet inventory's numbers as they
+                --    were submitted (original_quantity holds the first value if
+                --    the inventory was edited since).
+                -- 3. Very old orders with no sheet link: the day's count.
                 SELECT s.par_qty, s.par_unit_id, s.base_quantity, s.base_unit_id
                 FROM (
-                    SELECT c.par_qty, c.par_unit_id, c.base_quantity, c.base_unit_id,
+                    SELECT poi.par_level AS par_qty, poi.par_unit_id,
+                           poi.on_hand AS base_quantity, poi.on_hand_unit_id AS base_unit_id,
+                           0 AS source_rank, 0 AS row_id
+                    WHERE poi.on_hand IS NOT NULL OR poi.par_level IS NOT NULL
+                    UNION ALL
+                    SELECT c.par_qty, c.par_unit_id,
+                           COALESCE(c.original_quantity, c.base_quantity), c.base_unit_id,
                            1 AS source_rank, c.id AS row_id
                     FROM inventory_submission_counts c
                     JOIN inventory_submissions invs
                         ON c.inventory_submission_id = invs.id
                     WHERE c.product_id = poi.product_id
+                    AND invs.source = 'count_sheet'
                     AND (
                         -- Direct match via sheet_submission_id
                         (:sheet_submission_id IS NOT NULL AND invs.sheet_submission_id = :sheet_submission_id)
@@ -213,7 +224,8 @@ def purchase_order_pdf(po_id):
                         (:sheet_submission_id IS NULL AND invs.location_id = :location_id AND invs.count_date = :order_date)
                     )
                     UNION ALL
-                    SELECT ic2.par_qty, ic2.par_unit_id, ic2.base_quantity, ic2.base_unit_id,
+                    SELECT ic2.par_qty, ic2.par_unit_id,
+                           COALESCE(ic2.original_quantity, ic2.base_quantity), ic2.base_unit_id,
                            2 AS source_rank, ic2.id AS row_id
                     FROM inventory_counts ic2
                     WHERE ic2.product_id  = poi.product_id

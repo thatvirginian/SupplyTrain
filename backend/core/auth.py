@@ -9,7 +9,8 @@
 # Decorators (use one per route):
 #   admin_required           admin only
 #   manage_required          admin, gm, commissary_gm
-#   gm_or_admin_required     admin, gm                (store-side inventory corrections/deletes)
+#   gm_or_admin_required     admin, gm                (store-side inventory deletes)
+#   inventory_edit_required  INVENTORY_EDIT_ROLES     (change a SUBMITTED inventory's counts)
 #   staff_required           admin, gm, store, commissary, commissary_gm
 #   store_required           admin, gm, store
 #   comm_required            admin, commissary_gm, commissary
@@ -37,6 +38,11 @@ STORE_ROLES  = [ADMIN, GM, STORE]                    # store-side access
 COMM_ROLES   = [ADMIN, COMM_GM, COMMISSARY]          # commissary-side access
 MANAGE_ROLES = [ADMIN, GM, COMM_GM]                  # can edit orders
 STAFF_ROLES  = [ADMIN, GM, STORE, COMMISSARY, COMM_GM]  # any active user
+
+# Who may change the counts of an inventory after it was submitted (entry sheet
+# edits and detail page corrections). Add a role here to allow it; nothing else
+# needs to change, the pages read the answer from the API (can_edit).
+INVENTORY_EDIT_ROLES = [ADMIN]
 
 
 def _has_role(*roles):
@@ -160,6 +166,21 @@ def gm_or_admin_required(f):
     def decorated(*args, **kwargs):
         if not _has_role(ADMIN, GM):
             return jsonify({'error': 'Manager access required'}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def can_edit_submitted_inventory():
+    """True when the current user may change a submitted inventory's counts."""
+    return _has_role(*INVENTORY_EDIT_ROLES)
+
+
+def inventory_edit_required(f):
+    """INVENTORY_EDIT_ROLES only. Used where every call changes a submitted inventory."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not can_edit_submitted_inventory():
+            return jsonify({'error': 'You do not have permission to change a submitted inventory'}), 403
         return f(*args, **kwargs)
     return decorated
 

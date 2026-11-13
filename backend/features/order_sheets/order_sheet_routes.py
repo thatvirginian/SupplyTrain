@@ -1144,7 +1144,7 @@ def submit_sheet(submission_id):
 
             # ── Python: calculate order quantities ────────────────────────────
             # All the math happens here — no more per-product DB calls
-            order_calc = {}  # product_id → { order_qty, order_base, par_qty, par_unit_id, par_base_qty }
+            order_calc = {}  # product_id → { order_qty, order_base, ordered_base, par_qty, par_unit_id, par_base_qty }
 
             for e in entries:
                 pid          = e['product_id']
@@ -1174,7 +1174,8 @@ def submit_sheet(submission_id):
                 order_base = max(0.0, par_base - on_hand_base)
 
                 # Convert to vendor order unit using pre-fetched conversion
-                order_qty = order_base
+                order_qty    = order_base
+                ordered_base = order_base   # what is actually ordered, in base units
                 if e['order_unit_id'] and base_unit_id and order_base > 0:
                     key    = (base_unit_id, e['order_unit_id'], pid)
                     factor = vendor_conv_map.get(key)
@@ -1185,10 +1186,14 @@ def submit_sheet(submission_id):
                         frac      = raw_qty - whole
                         order_qty = whole + 1 if frac >= threshold else whole
                         order_qty = max(1, order_qty) if raw_qty > 0 else 0
+                        # The rounded order back in base units (e.g. need 35 lb,
+                        # order 1 case of 40 lb -> 40 lb, not 35).
+                        ordered_base = order_qty / factor
 
                 order_calc[pid] = {
                     'order_qty':        order_qty,
-                    'order_base':       order_base,
+                    'order_base':       order_base,     # the shortfall (par - on hand)
+                    'ordered_base':     ordered_base,   # what was ordered, base units
                     'par_qty':          par_qty_snap,
                     'par_unit_id':      par_unit_id_snap,
                     'par_base_qty':     par_base_qty_snap,
@@ -1298,13 +1303,15 @@ def submit_sheet(submission_id):
                             vendor_item_id, vendor_code, product_name,
                             order_unit_id, order_quantity, original_quantity,
                             base_quantity, base_unit_id,
-                            unit_price, comm_section_id
+                            unit_price, comm_section_id,
+                            on_hand, on_hand_unit_id, par_level, par_unit_id
                         ) VALUES (
                             :po_id, :product_id,
                             :vendor_item_id, :vendor_code, :product_name,
                             :order_unit_id, :order_quantity, :order_quantity,
                             :base_quantity, :base_unit_id,
-                            :unit_price, :comm_section_id
+                            :unit_price, :comm_section_id,
+                            :on_hand, :on_hand_unit_id, :par_level, :par_unit_id
                         )
                         ON CONFLICT (purchase_order_id, product_id) DO NOTHING
                     """), [
@@ -1316,10 +1323,19 @@ def submit_sheet(submission_id):
                             'product_name':    item['product_name'],
                             'order_unit_id':   item['order_unit_id'],
                             'order_quantity':  order_calc.get(item['product_id'], {}).get('order_qty', 0),
-                            'base_quantity':   order_calc.get(item['product_id'], {}).get('order_base', 0),
+                            # The ordered amount in base units (the PO line's base_quantity)
+                            'base_quantity':   order_calc.get(item['product_id'], {}).get('ordered_base', 0),
                             'base_unit_id':    item['base_unit_id'],
                             'unit_price':      item['price'],
                             'comm_section_id': comm_section_map.get(item['product_id']),
+                            # The order as it was made: on hand (base units) and par
+                            # at this moment. Kept on the line itself so later edits
+                            # to the inventory never change what this order shows.
+                            'on_hand':         (float(item['total_base_quantity'])
+                                                if item['total_base_quantity'] is not None else None),
+                            'on_hand_unit_id': item['base_unit_id'],
+                            'par_level':       order_calc.get(item['product_id'], {}).get('par_qty'),
+                            'par_unit_id':     order_calc.get(item['product_id'], {}).get('par_unit_id'),
                         }
                         for item in vdata['items']
                     ])
