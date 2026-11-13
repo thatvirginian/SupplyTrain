@@ -20,6 +20,7 @@ import CommissaryTemplateDetailPage from './features/commissary/pages/Commissary
 import InventoryHomePage           from './features/inventory/pages/InventoryHomePage.jsx'
 import InventoryHistoryPage        from './features/inventory/pages/InventoryHistoryPage.jsx'
 import InventoryDetailPage         from './features/inventory/pages/InventoryDetailPage.jsx'
+import InventoryDailyPage          from './features/inventory/pages/InventoryDailyPage.jsx'
 import InventoryCountSheetPage          from './features/inventory/pages/InventoryCountSheetPage.jsx'
 import InventoryTemplateListPage      from './features/inventory/pages/InventoryTemplateListPage.jsx'
 import InventoryTemplateDetailPage from './features/inventory/pages/InventoryTemplateDetailPage.jsx'
@@ -131,6 +132,7 @@ function App() {
               <Route path="orders/:id"                       element={<PurchaseOrderDetailPage />} />
               <Route path="inventory"                element={<InventoryHomePage />} />
               <Route path="inventory/history"        element={<InventoryHistoryPage />} />
+              <Route path="inventory/daily"          element={<InventoryDailyPage />} />
               <Route path="inventory/entry/:submissionId" element={<InventoryCountSheetPage />} />
               <Route path="inventory/:id"            element={<InventoryDetailPage />} />
             </>}
