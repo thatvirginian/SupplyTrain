@@ -92,16 +92,17 @@ def _vendor_products(conn, vendor_id, location_id, search=None, product_ids=None
 
 
 def _with_units(conn, products):
-    """Add 'units' (choices) and 'default_unit_id' (the vendor's order unit) to each row."""
+    """
+    Add 'units' (choices) and 'default_unit_id' to each row. Only units that
+    convert to the product's base unit are offered (every saved amount needs
+    a base quantity). Default: the vendor's order unit if it converts, else base.
+    """
     choices = load_unit_choices(conn, [p['product_id'] for p in products])
     for p in products:
-        units = list(choices.get(p['product_id'], []))
-        if p['order_unit_id'] and not any(u['id'] == p['order_unit_id'] for u in units):
-            # The vendor's order unit is always allowed, even without a conversion
-            # (base_quantity is then left empty, like Add Item does).
-            units.insert(0, {'id': p['order_unit_id'], 'name': p['order_unit'], 'is_base': False})
+        units = choices.get(p['product_id'], [])
         p['units'] = units
-        p['default_unit_id'] = p['order_unit_id'] or p['base_unit_id']
+        ids = {u['id'] for u in units}
+        p['default_unit_id'] = p['order_unit_id'] if p['order_unit_id'] in ids else p['base_unit_id']
     return products
 
 
@@ -224,9 +225,11 @@ def create_unscheduled_order():
                 if not any(u['id'] == uid for u in prod['units']):
                     return jsonify({'error': f"{prod['product_name']} cannot be ordered in that unit"}), 400
                 f = base_factor(conv_map, uid, base_units.get(l['product_id']), l['product_id'])
+                if f is None:
+                    return jsonify({'error': f"{prod['product_name']}: that unit has no conversion to the base unit"}), 400
                 l['unit_id']       = uid
                 l['base_unit_id']  = base_units.get(l['product_id'])
-                l['base_quantity'] = round(l['quantity'] * f, 4) if f is not None else None
+                l['base_quantity'] = round(l['quantity'] * f, 4)
 
             po_id = conn.execute(text("""
                 INSERT INTO purchase_orders (

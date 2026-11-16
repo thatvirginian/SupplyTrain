@@ -22,6 +22,16 @@ const STATUS_BADGE = {
 
 const POLL_INTERVAL = 30000
 
+const apiError = (e, fallback) => e?.response?.data?.error || fallback
+
+// timestamptz -> value for <input type="datetime-local"> in the browser's time zone
+const toLocalInput = (ts) => {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 export default function PurchaseOrderDetailPage() {
   const { id }   = useParams()
   const navigate = useNavigate()
@@ -45,6 +55,8 @@ export default function PurchaseOrderDetailPage() {
   const [receiveNotes,   setReceiveNotes]   = useState({})  // item.id → note
   const [fulfillNote,    setFulfillNote]    = useState('')
   const [fulfilling,     setFulfilling]     = useState(false)
+  // Message from the last action (refused edit, fulfill warning)
+  const [actionMsg,      setActionMsg]      = useState(null)   // { kind: 'error' | 'warning', text }
 
   // Regular PO editing
   const [editingItem, setEditingItem] = useState(null)
@@ -180,6 +192,7 @@ export default function PurchaseOrderDetailPage() {
       await axios.put(`/api/purchase-order-items/${item.id}`, { order_quantity: parsed })
     } catch (e) {
       updateItemLocally(item.id, { order_quantity: item.order_quantity })
+      setActionMsg({ kind: 'error', text: `${item.product_name}: ${apiError(e, 'quantity not saved')}` })
     } finally {
       setSavingItems(prev => { const n = new Set(prev); n.delete(item.id); return n })
     }
@@ -198,6 +211,7 @@ export default function PurchaseOrderDetailPage() {
       })
     } catch (e) {
       updateItemLocally(item.id, { received_status: current })
+      setActionMsg({ kind: 'error', text: `${item.product_name}: ${apiError(e, 'not saved')}` })
     } finally {
       setSavingItems(prev => { const n = new Set(prev); n.delete(item.id); return n })
     }
@@ -205,13 +219,25 @@ export default function PurchaseOrderDetailPage() {
 
   // ── Fulfill order ──────────────────────────────────────────────────────────
   const handleFulfill = async () => {
-    if (!confirm('Mark this order as fulfilled? This cannot be undone.')) return
+    const unmarked = (order.items || []).filter(i => !i.received_status).length
+    const msg = unmarked
+      ? `Mark this order as fulfilled? The ${unmarked} item${unmarked === 1 ? '' : 's'} not marked will be counted as received in full. This cannot be undone.`
+      : 'Mark this order as fulfilled? This cannot be undone.'
+    if (!confirm(msg)) return
     setFulfilling(true)
+    setActionMsg(null)
     try {
-      await axios.post(`/api/purchase-orders/${id}/fulfill`, { notes: fulfillNote || null })
+      const res = await axios.post(`/api/purchase-orders/${id}/fulfill`, { notes: fulfillNote || null })
+      const missing = res.data?.missing_base || []
+      if (missing.length) {
+        setActionMsg({ kind: 'warning', text:
+          `Fulfilled. ${missing.length} item${missing.length === 1 ? ' has' : 's have'} no base quantity ` +
+          `(the unit has no conversion), so usage can't count ${missing.length === 1 ? 'it' : 'them'} yet: ${missing.join(', ')}. ` +
+          'Add the conversion on the product, then an admin re-saves the quantity.' })
+      }
       fetchOrder()
     } catch (e) {
-      console.error('Failed to fulfill', e)
+      setActionMsg({ kind: 'error', text: apiError(e, 'Could not fulfill the order.') })
     } finally {
       setFulfilling(false)
     }
@@ -223,7 +249,7 @@ export default function PurchaseOrderDetailPage() {
       await axios.put(`/api/purchase-order-items/${itemId}`, { order_quantity: parseFloat(editQty) })
       setEditingItem(null)
       fetchOrder()
-    } catch (e) { console.error('Failed to update item', e) }
+    } catch (e) { setActionMsg({ kind: 'error', text: apiError(e, 'Quantity not saved.') }) }
   }
 
   const handleDeleteItem = async (itemId) => {
@@ -417,6 +443,9 @@ export default function PurchaseOrderDetailPage() {
         <div className="order-cell order-cell-name">
           <span className="order-product-name">{item.product_name}</span>
           {item.is_short && <span className="order-short-badge">short</span>}
+          {isFulfilled && item.received_status === 'returned' && (
+            <span className="order-short-badge" title={item.received_note || 'Returned: counted as 0 received'}>returned</span>
+          )}
           {item.edited_by && !item.is_short && (
             <span className="order-edited-badge"
               title={`Edited by ${item.edited_by}${item.edited_at ? ' · ' + new Date(item.edited_at).toLocaleString() : ''}`}>
@@ -555,6 +584,14 @@ export default function PurchaseOrderDetailPage() {
         </div>
       </div>
 
+      {actionMsg && (
+        <div className={`alert ${actionMsg.kind === 'error' ? 'alert-error' : 'alert-warning'} no-print`}
+          style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', gap: '1rem' }}>
+          <span>{actionMsg.text}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setActionMsg(null)}>✕</button>
+        </div>
+      )}
+
       {/* Order meta */}
       <div className="card" style={{ marginBottom: '1rem', padding: '0.6rem 1rem' }}>
         <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.78rem' }}>
@@ -590,6 +627,28 @@ export default function PurchaseOrderDetailPage() {
               <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.65rem', textTransform: 'uppercase' }}>Shipped</span>
               <span>{new Date(order.shipped_at).toLocaleDateString()}</span>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>by {order.shipped_by?.split('@')[0]}</span>
+            </div>
+          )}
+
+          {order.received_at && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.65rem', textTransform: 'uppercase' }}>Received</span>
+              {isAdmin && isFulfilled ? (
+                <input className="input" type="datetime-local" title="Admin: correct when the delivery arrived"
+                  style={{ width: '190px', padding: '0.2rem 0.4rem', fontSize: '0.75rem' }}
+                  defaultValue={toLocalInput(order.received_at)}
+                  onBlur={async e => {
+                    if (!e.target.value || e.target.value === toLocalInput(order.received_at)) return
+                    try {
+                      await axios.put(`/api/purchase-orders/${id}`, { received_at: new Date(e.target.value).toISOString() })
+                      fetchOrder()
+                    } catch (err) {
+                      setActionMsg({ kind: 'error', text: apiError(err, 'Received time not saved.') })
+                    }
+                  }} />
+              ) : (
+                <span>{new Date(order.received_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
+              )}
             </div>
           )}
 

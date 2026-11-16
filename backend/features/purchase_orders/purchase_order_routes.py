@@ -34,6 +34,7 @@ from core.auth import (
     _get_user_location,
 )
 from core.database import get_engine
+from core.units import load_base_units, load_conversion_map, base_factor
 
 logger = logging.getLogger(__name__)
 
@@ -538,7 +539,7 @@ def get_purchase_order(po_id):
                 po.status, po.is_commissary, po.notes,
                 po.created_by, po.submitted_at,
                 po.shipped_at, po.shipped_by,
-                po.fulfilled_at, po.fulfilled_by,
+                po.fulfilled_at, po.fulfilled_by, po.received_at,
                 po.sheet_submission_id,
                 po.order_type, po.reason, po.reference,
                 po.created_at, po.updated_at,
@@ -618,11 +619,34 @@ def delete_purchase_order(po_id):
 @bp.route('/purchase-orders/<int:po_id>', methods=['PUT'])
 @manage_required
 def update_purchase_order(po_id):
-    """Update order status, notes, or expected_date."""
+    """
+    Update order status, notes, or expected_date.
+    received_at: admin only, on a fulfilled order (bookkeeping correction of
+    when the delivery arrived; usage uses this date).
+    Fulfilling goes through POST /fulfill (it marks the lines received), not here.
+    """
     data = request.get_json(force=True)
     new_status = data.get('status')
+    if new_status == 'fulfilled':
+        return jsonify({'error': 'Use Mark Fulfilled (POST /fulfill) to fulfill an order'}), 400
     try:
         with get_engine().begin() as conn:
+            if 'received_at' in data:
+                if not _has_role(ADMIN):
+                    return jsonify({'error': 'Only an admin can change the received time'}), 403
+                po = conn.execute(text("SELECT status FROM purchase_orders WHERE id = :id"),
+                                  {'id': po_id}).fetchone()
+                if not po:
+                    return jsonify({'error': 'Order not found'}), 404
+                if po.status != 'fulfilled' or not data['received_at']:
+                    return jsonify({'error': 'The received time can only be set on a fulfilled order'}), 400
+                try:
+                    conn.execute(text("""
+                        UPDATE purchase_orders SET received_at = CAST(:at AS timestamptz), updated_at = NOW()
+                        WHERE id = :id
+                    """), {'id': po_id, 'at': data['received_at']})
+                except Exception:
+                    return jsonify({'error': 'Bad received time'}), 400
             conn.execute(text("""
                 UPDATE purchase_orders SET
                     status        = COALESCE(:status, status),
@@ -882,37 +906,33 @@ def update_order_item(item_id):
                 else:
                     return jsonify({'error': 'Order is locked'}), 403
 
-            # Recalculate base_quantity if qty is changing
-            new_base_qty = None
-            if new_qty is not None and current.order_unit_id and current.base_unit_id:
-                conv = conn.execute(text("""
-                    SELECT conversion, from_unit_id, to_unit_id
-                    FROM unit_conversions
-                    WHERE (
-                        (from_unit_id = :order_unit_id AND to_unit_id = :base_unit_id)
-                        OR
-                        (from_unit_id = :base_unit_id  AND to_unit_id = :order_unit_id)
-                    )
-                    AND (product_id = :product_id OR product_id IS NULL)
-                    ORDER BY product_id NULLS LAST,
-                             CASE WHEN from_unit_id = :order_unit_id THEN 0 ELSE 1 END
-                    LIMIT 1
-                """), {
-                    'order_unit_id': current.order_unit_id,
-                    'base_unit_id':  current.base_unit_id,
-                    'product_id':    current.product_id,
-                }).fetchone()
-
-                if conv:
-                    factor = float(conv.conversion) if conv.from_unit_id == current.order_unit_id \
-                             else 1.0 / float(conv.conversion)
-                    new_base_qty = float(new_qty) * factor
+            # New quantity -> new base quantity. Base unit from products (not the
+            # row), today's conversion. No conversion = refuse, never guess.
+            new_base_qty, new_base_unit = None, None
+            if new_qty is not None:
+                try:
+                    new_qty = float(new_qty)
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'Quantity must be a number'}), 400
+                if new_qty < 0:
+                    return jsonify({'error': 'Quantity cannot be negative'}), 400
+                base_units = load_base_units(conn, [current.product_id])
+                new_base_unit = base_units.get(current.product_id)
+                conv_map = load_conversion_map(conn, [current.product_id],
+                                               {current.order_unit_id}, {new_base_unit})
+                f = base_factor(conv_map, current.order_unit_id, new_base_unit, current.product_id)
+                if f is None:
+                    return jsonify({'error': "This line's unit has no conversion to the product's "
+                                             "base unit. Add the conversion on the product first."}), 400
+                new_base_qty = round(new_qty * f, 4)
 
             conn.execute(text("""
                 UPDATE purchase_order_items SET
                     order_quantity  = COALESCE(:order_quantity, order_quantity),
                     base_quantity   = CASE WHEN :new_base_qty IS NOT NULL
                                           THEN :new_base_qty ELSE base_quantity END,
+                    base_unit_id    = CASE WHEN :new_base_qty IS NOT NULL
+                                          THEN :new_base_unit ELSE base_unit_id END,
                     is_short        = COALESCE(:is_short, is_short),
                     picked          = COALESCE(:picked, picked),
                     notes           = CASE WHEN :comm_only THEN notes
@@ -932,6 +952,7 @@ def update_order_item(item_id):
                 'id':             item_id,
                 'order_quantity': float(new_qty) if new_qty is not None else None,
                 'new_base_qty':   new_base_qty,
+                'new_base_unit':  new_base_unit,
                 'is_short':       data.get('is_short'),
                 'picked':         data.get('picked'),
                 'notes':          data.get('notes'),
@@ -948,9 +969,16 @@ def update_order_item(item_id):
 @bp.route('/purchase-order-items/<int:item_id>/receive', methods=['PUT'])
 @store_required
 def receive_order_item(item_id):
-    """Store staff marks an item as received or returned with optional note."""
-    data = request.get_json(force=True)
-    status = data.get('received_status')  # 'received' or 'returned'
+    """
+    Mark a line received or returned, or clear the mark.
+    Body: { received_status: 'received' | 'returned' | null, received_note }
+      received  the line's amount arrived (base_quantity is what usage counts)
+      returned  nothing kept (usage counts 0)
+      null      clears the mark (back to unmarked)
+    Shipped orders: store staff. Fulfilled orders: admin only (correction).
+    """
+    data   = request.get_json(force=True) or {}
+    status = data.get('received_status')
     note   = data.get('received_note')
 
     if status not in ('received', 'returned', None):
@@ -958,12 +986,25 @@ def receive_order_item(item_id):
 
     try:
         with get_engine().begin() as conn:
+            row = conn.execute(text("""
+                SELECT po.status FROM purchase_order_items poi
+                JOIN purchase_orders po ON po.id = poi.purchase_order_id
+                WHERE poi.id = :id
+            """), {'id': item_id}).fetchone()
+            if not row:
+                return jsonify({'error': 'Item not found'}), 404
+            if row.status == 'fulfilled':
+                if not _has_role(ADMIN):
+                    return jsonify({'error': 'This order is fulfilled; only an admin can change what was received'}), 403
+            elif row.status != 'shipped':
+                return jsonify({'error': f'Items can only be received on a shipped order (this one is {row.status})'}), 400
+
             conn.execute(text("""
                 UPDATE purchase_order_items SET
-                    received_status = COALESCE(:status, received_status),
+                    received_status = :status,
                     received_note   = :note,
-                    received_by     = :received_by,
-                    received_at     = NOW()
+                    received_by     = CASE WHEN :status IS NULL THEN NULL ELSE :received_by END,
+                    received_at     = CASE WHEN :status IS NULL THEN NULL ELSE NOW() END
                 WHERE id = :id
             """), {
                 'id':          item_id,
@@ -1033,7 +1074,14 @@ def ship_order(po_id):
 @bp.route('/purchase-orders/<int:po_id>/fulfill', methods=['POST'])
 @store_required
 def fulfill_order(po_id):
-    """Store marks order as fulfilled after receiving."""
+    """
+    Store marks order as fulfilled after receiving.
+    Every line not marked is counted as received in full (marked received
+    by the person fulfilling). The order's received_at is set to now; an
+    admin can correct it later (PUT /purchase-orders/<id> received_at).
+    Returns 'missing_base': lines kept without a base quantity (their unit
+    has no conversion), which usage cannot count until fixed.
+    """
     data = request.get_json(force=True) or {}
     note = data.get('notes')
     try:
@@ -1046,16 +1094,33 @@ def fulfill_order(po_id):
             if po.status != 'shipped':
                 return jsonify({'error': f'Cannot fulfill order in {po.status} status'}), 400
 
+            marked = conn.execute(text("""
+                UPDATE purchase_order_items SET
+                    received_status = 'received',
+                    received_by     = :by,
+                    received_at     = NOW()
+                WHERE purchase_order_id = :id AND received_status IS NULL
+            """), {'id': po_id, 'by': g.user.get('email')}).rowcount
+
             conn.execute(text("""
                 UPDATE purchase_orders SET
                     status       = 'fulfilled',
                     fulfilled_at = NOW(),
                     fulfilled_by = :by,
+                    received_at  = COALESCE(received_at, NOW()),
                     notes        = COALESCE(:notes, notes),
                     updated_at   = NOW()
                 WHERE id = :id
             """), {'id': po_id, 'by': g.user.get('email'), 'notes': note})
-        return jsonify({'status': 'ok'})
+
+            missing = conn.execute(text("""
+                SELECT product_name FROM purchase_order_items
+                WHERE purchase_order_id = :id AND received_status = 'received'
+                  AND base_quantity IS NULL
+                ORDER BY product_name
+            """), {'id': po_id}).fetchall()
+        return jsonify({'status': 'ok', 'marked_received': marked,
+                        'missing_base': [r.product_name for r in missing]})
     except Exception as e:
         logger.error(f'fulfill_order: {e}')
         return jsonify({'error': str(e)}), 500
