@@ -13,6 +13,7 @@
 #   load_conversion_map(conn, product_ids, unit_ids, base_unit_ids) -> conv_map
 #   base_factor(conv_map, unit_id, base_unit_id, product_id) -> float | None
 #   has_base_conversion(conn, product_id, unit_id) -> bool
+#   load_unit_choices(conn, product_ids)       -> {product_id: [{id, name, is_base}]}
 # =============================================================================
 
 from sqlalchemy import text
@@ -75,3 +76,38 @@ def has_base_conversion(conn, product_id, unit_id):
         return False
     conv = load_conversion_map(conn, [product_id], [unit_id], [base])
     return base_factor(conv, unit_id, base, product_id) is not None
+
+
+def load_unit_choices(conn, product_ids):
+    """
+    The units a quantity may be entered in for each product: the base unit,
+    plus every unit that has a conversion to it (product-specific or global,
+    either direction). Used by the transfer and unscheduled order pickers.
+    Returns {product_id: [{'id', 'name', 'is_base'}]}, base unit first.
+    """
+    if not product_ids:
+        return {}
+    rows = conn.execute(text("""
+        SELECT p.id AS product_id, u.id, u.name, (u.id = p.base_unit_id) AS is_base
+        FROM products p
+        JOIN LATERAL (
+            SELECT p.base_unit_id AS unit_id
+            UNION
+            SELECT CASE WHEN uc.from_unit_id = p.base_unit_id
+                        THEN uc.to_unit_id ELSE uc.from_unit_id END
+            FROM unit_conversions uc
+            WHERE (uc.from_unit_id = p.base_unit_id OR uc.to_unit_id = p.base_unit_id)
+              AND (uc.product_id = p.id OR uc.product_id IS NULL)
+              AND uc.conversion > 0
+        ) x ON TRUE
+        JOIN units u ON u.id = x.unit_id
+                    AND u.active = TRUE
+                    AND (u.product_id IS NULL OR u.product_id = p.id)
+        WHERE p.id = ANY(:ids)
+        ORDER BY p.id, (u.id = p.base_unit_id) DESC, u.name
+    """), {'ids': list(product_ids)}).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r.product_id, []).append(
+            {'id': r.id, 'name': r.name, 'is_base': bool(r.is_base)})
+    return out

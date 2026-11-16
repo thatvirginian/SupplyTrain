@@ -7,7 +7,9 @@
 #   catalog          Products, Vendor Items, units, categories, vendors, per-location vendor overrides
 #   order_sheets     Order Templates (admin) and Order Sheets (store)
 #   par_levels       Par Levels
-#   purchase_orders  Order History / Order Detail: accept, ship, receive, fulfill
+#   purchase_orders  Order History / Order Detail: accept, ship, receive, fulfill,
+#                    plus Unscheduled Orders (catering etc., placed by hand, no inventory)
+#   transfers        Store-to-store transfers (open -> sent -> received)
 #   commissary       Comm Templates (and the commissary side of ordering)
 #   inventory        Inv Templates (admin) and Inventories (staff)
 #
@@ -30,6 +32,8 @@ def register_features(app):
     from features.order_sheets.order_sheet_routes import bp as order_sheet_routes_bp
     from features.par_levels.par_level_routes import bp as par_level_routes_bp
     from features.purchase_orders.purchase_order_routes import bp as purchase_order_routes_bp
+    from features.purchase_orders.unscheduled_order_routes import bp as unscheduled_order_routes_bp
+    from features.transfers.transfer_routes import bp as transfer_routes_bp
     from features.commissary.commissary_template_routes import bp as commissary_template_routes_bp
     from features.inventory.inventory_template_routes import bp as inventory_template_routes_bp
     from features.inventory.inventory_count_routes import bp as inventory_count_routes_bp
@@ -46,6 +50,8 @@ def register_features(app):
     app.register_blueprint(order_sheet_routes_bp)
     app.register_blueprint(par_level_routes_bp)
     app.register_blueprint(purchase_order_routes_bp)
+    app.register_blueprint(unscheduled_order_routes_bp)
+    app.register_blueprint(transfer_routes_bp)
     app.register_blueprint(commissary_template_routes_bp)
     app.register_blueprint(inventory_template_routes_bp)
     app.register_blueprint(inventory_count_routes_bp)

@@ -24,6 +24,10 @@ import InventoryDailyPage          from './features/inventory/pages/InventoryDai
 import InventoryCountSheetPage          from './features/inventory/pages/InventoryCountSheetPage.jsx'
 import InventoryTemplateListPage      from './features/inventory/pages/InventoryTemplateListPage.jsx'
 import InventoryTemplateDetailPage from './features/inventory/pages/InventoryTemplateDetailPage.jsx'
+import UnscheduledOrderNewPage     from './features/purchase_orders/pages/UnscheduledOrderNewPage.jsx'
+import TransferListPage            from './features/transfers/pages/TransferListPage.jsx'
+import TransferNewPage             from './features/transfers/pages/TransferNewPage.jsx'
+import TransferDetailPage          from './features/transfers/pages/TransferDetailPage.jsx'
 
 function App() {
   const [user, setUser]     = useState(null)
@@ -124,6 +128,7 @@ function App() {
             {isStoreUser && <>
               <Route path="count-sheets"                     element={<OrderSheetHomePage />} />
               <Route path="count-sheet/:submissionId"        element={<OrderSheetPage />} />
+              <Route path="orders/new"                       element={<UnscheduledOrderNewPage />} />
             </>}
 
             {/* Orders — store side and commissary side */}
@@ -135,6 +140,9 @@ function App() {
               <Route path="inventory/daily"          element={<InventoryDailyPage />} />
               <Route path="inventory/entry/:submissionId" element={<InventoryCountSheetPage />} />
               <Route path="inventory/:id"            element={<InventoryDetailPage />} />
+              <Route path="transfers"                element={<TransferListPage />} />
+              <Route path="transfers/new"            element={<TransferNewPage />} />
+              <Route path="transfers/:id"            element={<TransferDetailPage />} />
             </>}
 
             {/* 404 */}

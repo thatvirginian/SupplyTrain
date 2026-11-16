@@ -5,6 +5,7 @@ import { useAuth } from '../../../core/auth/AuthContext.js'
 import { NumericInput } from '../../../core/components/NumericInput.jsx'
 import { formatDate, toDateInputValue } from '../../../core/utils/dateUtils.js'
 import { useDebounce } from '../../../core/hooks/useDebounce.js'
+import { orderReasonLabel } from '../orderConstants.js'
 import '../../../core/styles/shared-ui.css'
 import '../../../core/styles/order-and-print.css'
 import './PurchaseOrderDetailPage.css'
@@ -518,6 +519,11 @@ export default function PurchaseOrderDetailPage() {
           <span className={`badge ${order.is_commissary ? 'badge-warning' : 'badge-info'}`}>
             {order.is_commissary ? 'Commissary' : 'Purchase'}
           </span>
+          {order.order_type === 'unscheduled' && (
+            <span className="badge badge-neutral" title="Placed by hand, not from an order sheet">
+              Unscheduled · {orderReasonLabel(order.reason)}
+            </span>
+          )}
           <button className="btn btn-secondary" onClick={() => window.open(`/api/purchase-orders/${id}/pdf`, '_blank')}>
             Print PDF
           </button>
@@ -554,7 +560,9 @@ export default function PurchaseOrderDetailPage() {
         <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.78rem' }}>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-            <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.65rem', textTransform: 'uppercase' }}>ETA</span>
+            <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.65rem', textTransform: 'uppercase' }}>
+              {order.order_type === 'unscheduled' ? 'Needed by' : 'ETA'}
+            </span>
             {isManager && (isOpen || isAccepted) ? (
               <input className="input" type="date" style={{ width: '140px', padding: '0.2rem 0.4rem', fontSize: '0.75rem' }}
                 defaultValue={toDateInputValue(order.expected_date)}
@@ -569,6 +577,13 @@ export default function PurchaseOrderDetailPage() {
               <span>{order.expected_date ? formatDate(order.expected_date) : '—'}</span>
             )}
           </div>
+
+          {order.reference && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.65rem', textTransform: 'uppercase' }}>Ref</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{order.reference}</span>
+            </div>
+          )}
 
           {order.shipped_at && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>

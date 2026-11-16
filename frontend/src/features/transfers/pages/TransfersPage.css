@@ -1,0 +1,138 @@
+/* =============================================================================
+   TransfersPage.css: Transfers pages, and the shared layout of the two
+   "new" pages (TransferNewPage, UnscheduledOrderNewPage).
+   ============================================================================= */
+
+/* ── New pages: form card + items card ───────────────────────────────────── */
+.xfer-new-grid {
+  display:               grid;
+  grid-template-columns: 340px 1fr;
+  gap:                   1rem;
+  align-items:           start;
+}
+
+.xfer-form {
+  display:        flex;
+  flex-direction: column;
+  gap:            0.85rem;
+}
+
+.xfer-count {
+  font-size: 0.7rem;
+  color:     var(--text-muted);
+}
+
+.xfer-actions {
+  display:         flex;
+  justify-content: flex-end;
+  gap:             0.5rem;
+  margin-top:      1rem;
+}
+
+.xfer-missing {
+  text-align: right;
+  font-size:  0.72rem;
+  color:      var(--text-muted);
+  margin-top: 0.4rem;
+}
+
+/* Sending / receiving toggle on the new transfer page */
+.xfer-direction {
+  display:       grid;
+  grid-template-columns: 1fr 1fr;
+  border:        1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow:      hidden;
+}
+
+.xfer-direction button {
+  padding:     0.5rem;
+  background:  var(--bg-surface);
+  border:      none;
+  font-size:   0.8rem;
+  color:       var(--text-secondary);
+  cursor:      pointer;
+}
+.xfer-direction button + button { border-left: 1px solid var(--border); }
+.xfer-direction button.is-active {
+  background:  var(--text-primary);
+  color:       var(--accent-y);
+  font-weight: 600;
+}
+
+.xfer-swap {
+  align-self: center;
+  font-size:  1rem;
+}
+
+/* ── From → To ────────────────────────────────────────────────────────────── */
+.xfer-route {
+  display:     inline-flex;
+  align-items: center;
+  gap:         0.4rem;
+}
+.xfer-route-arrow { color: var(--accent); font-weight: 700; }
+.xfer-route-mine  { font-weight: 600; }
+
+/* ── Detail page lines ───────────────────────────────────────────────────── */
+.xfer-lines-row {
+  display:               grid;
+  grid-template-columns: 1fr 90px 90px 110px 1.2fr;
+  gap:                   0.5rem;
+  align-items:           center;
+  padding:               0.55rem 1.25rem;
+  border-bottom:         1px solid var(--border-light);
+  font-size:             0.85rem;
+}
+.xfer-lines-row:last-child { border-bottom: none; }
+
+.xfer-lines-header {
+  background:     var(--bg-raised);
+  font-size:      0.65rem;
+  font-weight:    600;
+  color:          var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top:    0.4rem;
+  padding-bottom: 0.4rem;
+}
+
+.xfer-num  { font-family: var(--font-mono); text-align: right; }
+.xfer-diff { color: var(--error); font-weight: 600; }
+.xfer-base { display: block; font-size: 0.68rem; color: var(--text-muted); }
+
+.xfer-meta {
+  display:     flex;
+  flex-wrap:   wrap;
+  gap:         0.4rem 1.25rem;
+  font-size:   0.78rem;
+}
+.xfer-meta-label {
+  color:          var(--text-muted);
+  font-weight:    600;
+  font-size:      0.65rem;
+  text-transform: uppercase;
+  margin-right:   0.3rem;
+}
+
+/* Receive bar under the lines (sent transfers, receiving store) */
+.xfer-receive-bar {
+  display:     flex;
+  gap:         0.5rem;
+  align-items: center;
+  padding:     0.75rem 1.25rem;
+  border-top:  1px solid var(--border);
+}
+.xfer-receive-bar .input { flex: 1; min-width: 0; }
+.xfer-receive-bar .btn   { flex-shrink: 0; }
+
+.xfer-arriving td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+
+@media (max-width: 900px) {
+  .xfer-new-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .xfer-lines-row { grid-template-columns: 1fr 70px 80px; padding: 0.5rem 0.75rem; }
+  .xfer-lines-row > :nth-child(n+4) { grid-column: 1 / -1; }
+}

@@ -17,7 +17,7 @@ function NavItem({ to, label, icon, collapsed }) {
 }
 
 export default function Layout() {
-  const { user, isAdmin } = useAuth()
+  const { user, isAdmin, isStoreUser } = useAuth()
 
   // Persist collapsed state in localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -64,6 +64,10 @@ export default function Layout() {
           {!collapsed && <div className="nav-section-label">Inventory</div>}
           <NavItem to="/count-sheets"   label="Order Sheet"    icon="≡" collapsed={collapsed} />
           <NavItem to="/orders/history" label="Order History"  icon="◷" collapsed={collapsed} />
+          {isStoreUser && (
+            <NavItem to="/orders/new"   label="Unscheduled Order" icon="✚" collapsed={collapsed} />
+          )}
+          <NavItem to="/transfers"      label="Transfers"      icon="⇆" collapsed={collapsed} />
           <NavItem to="/inventory"      label="Inventories"    icon="⧉" collapsed={collapsed} />
           <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
         </nav>

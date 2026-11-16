@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { formatDate, formatDateShort } from '../../../core/utils/dateUtils.js'
 import axios from 'axios'
+import { useAuth } from '../../../core/auth/AuthContext.js'
+import { orderReasonLabel } from '../orderConstants.js'
 import '../../../core/styles/shared-ui.css'
 import '../../../core/styles/order-and-print.css'
 
@@ -16,6 +18,7 @@ const STATUS_BADGE = {
 
 export default function PurchaseOrderHistoryPage() {
   const navigate = useNavigate()
+  const { isStoreUser } = useAuth()
 
   const [orders,    setOrders]    = useState([])
   const [locations, setLocations] = useState([])
@@ -28,6 +31,7 @@ export default function PurchaseOrderHistoryPage() {
   const [vendorId,    setVendorId]    = useState('')
   const [status,      setStatus]      = useState('')
   const [isComm,      setIsComm]      = useState('')
+  const [orderType,   setOrderType]   = useState('')
   const [page,        setPage]        = useState(1)
   const PER_PAGE = 20
 
@@ -39,6 +43,7 @@ export default function PurchaseOrderHistoryPage() {
       if (vendorId)   params.vendor_id     = vendorId
       if (status)     params.status        = status
       if (isComm)     params.is_commissary = isComm
+      if (orderType)  params.order_type    = orderType
       const res = await axios.get('/api/purchase-orders', { params })
       setOrders(res.data.orders || [])
       setTotal(res.data.total  || 0)
@@ -47,7 +52,7 @@ export default function PurchaseOrderHistoryPage() {
     } finally {
       setLoading(false)
     }
-  }, [locationId, vendorId, status, isComm, page])
+  }, [locationId, vendorId, status, isComm, orderType, page])
 
   const fetchStatic = useCallback(async () => {
     try {
@@ -63,7 +68,7 @@ export default function PurchaseOrderHistoryPage() {
   }, [])
 
   useEffect(() => { fetchStatic() }, [fetchStatic])
-  useEffect(() => { setPage(1) }, [locationId, vendorId, status, isComm])
+  useEffect(() => { setPage(1) }, [locationId, vendorId, status, isComm, orderType])
   useEffect(() => { fetchOrders() }, [fetchOrders])
 
 
@@ -76,6 +81,11 @@ export default function PurchaseOrderHistoryPage() {
           <h1 className="page-title">Order History</h1>
           <p className="page-subtitle">{total} orders</p>
         </div>
+        {isStoreUser && (
+          <button className="btn btn-primary" onClick={() => navigate('/orders/new')}>
+            + Unscheduled Order
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -111,6 +121,13 @@ export default function PurchaseOrderHistoryPage() {
           <option value="">All Types</option>
           <option value="false">Purchase Orders</option>
           <option value="true">Commissary Orders</option>
+        </select>
+
+        <select className="input filter-select" value={orderType}
+          onChange={e => setOrderType(e.target.value)}>
+          <option value="">Scheduled + Unscheduled</option>
+          <option value="scheduled">From Order Sheet</option>
+          <option value="unscheduled">Unscheduled (catering etc.)</option>
         </select>
       </div>
 
@@ -149,6 +166,12 @@ export default function PurchaseOrderHistoryPage() {
                       <span className={`badge ${o.is_commissary ? 'badge-warning' : 'badge-info'}`}>
                         {o.is_commissary ? 'Commissary' : 'Purchase'}
                       </span>
+                      {o.order_type === 'unscheduled' && (
+                        <span className="badge badge-neutral" style={{ marginLeft: '0.3rem' }}
+                          title={o.reference || 'Unscheduled order'}>
+                          {orderReasonLabel(o.reason)}
+                        </span>
+                      )}
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>
                       {o.line_item_count} items

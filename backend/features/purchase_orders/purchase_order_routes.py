@@ -3,6 +3,8 @@
 # =============================================================================
 # Purchase Orders (Order History): list, view, PDF, edit, add/edit/receive items, and the lifecycle
 # open -> accepted -> shipped -> fulfilled.
+# order_type: 'scheduled' (made by an order sheet) or 'unscheduled' (placed by hand,
+# see unscheduled_order_routes.py; no inventory, par or on hand behind it).
 #
 # Endpoints in this file:
 #   GET     /api/purchase-orders                             list_purchase_orders
@@ -58,6 +60,7 @@ def list_purchase_orders():
     vendor_id    = request.args.get('vendor_id', type=int)
     status       = request.args.get('status')
     is_comm      = request.args.get('is_commissary')
+    order_type   = request.args.get('order_type')
     page         = request.args.get('page', 1, type=int)
     per_page     = request.args.get('per_page', 20, type=int)
     offset       = (page - 1) * per_page
@@ -86,6 +89,9 @@ def list_purchase_orders():
         filters.append('po.is_commissary = TRUE')
     elif is_comm == 'false':
         filters.append('po.is_commissary = FALSE')
+    if order_type in ('scheduled', 'unscheduled'):
+        filters.append('po.order_type = :order_type')
+        params['order_type'] = order_type
 
     where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
 
@@ -100,6 +106,7 @@ def list_purchase_orders():
                 po.status, po.is_commissary,
                 po.created_by, po.submitted_at, po.received_at,
                 po.created_at, po.notes,
+                po.order_type, po.reason, po.reference, po.expected_date,
                 v.id   AS vendor_id,
                 v.name AS vendor_name,
                 l.location_name,
@@ -148,6 +155,7 @@ def purchase_order_pdf(po_id):
                 po.shipped_at, po.shipped_by,
                 po.fulfilled_at, po.fulfilled_by,
                 po.sheet_submission_id,
+                po.order_type, po.reason, po.reference,
                 v.name AS vendor_name,
                 l.location_name,
                 l.abbreviation
@@ -216,6 +224,7 @@ def purchase_order_pdf(po_id):
                         ON c.inventory_submission_id = invs.id
                     WHERE c.product_id = poi.product_id
                     AND invs.source = 'count_sheet'
+                    AND :is_scheduled
                     AND (
                         -- Direct match via sheet_submission_id
                         (:sheet_submission_id IS NOT NULL AND invs.sheet_submission_id = :sheet_submission_id)
@@ -232,6 +241,7 @@ def purchase_order_pdf(po_id):
                       AND ic2.location_id = :location_id
                       AND ic2.count_date  = :order_date
                       AND :sheet_submission_id IS NULL
+                      AND :is_scheduled
                 ) s
                 ORDER BY s.source_rank, (s.par_qty IS NOT NULL) DESC, s.row_id DESC
                 LIMIT 1
@@ -257,6 +267,8 @@ def purchase_order_pdf(po_id):
             'sheet_submission_id': po['sheet_submission_id'],
             'location_id':         po['location_id'],
             'order_date':          po['order_date'],
+            # Unscheduled orders have no inventory: never borrow the day's count
+            'is_scheduled':        po['order_type'] != 'unscheduled',
         }).mappings().all()
 
         sections_raw = conn.execute(text("""
@@ -339,6 +351,9 @@ def purchase_order_pdf(po_id):
             unit_text = ''
             if item['par_qty'] is not None:
                 unit_text = f"{item['par_unit'] or ''}"
+            else:
+                # No par (unscheduled orders, lines added by hand): show the order unit
+                unit_text = item['order_unit'] or ''
 
             name_style = short_sty if item['is_short'] else item_name
             rows.append([
@@ -408,7 +423,10 @@ def purchase_order_pdf(po_id):
         canvas.drawString(x_title, y_top - 0.28*inch, po['location_name'] or '')
         canvas.setFont('Helvetica', 7.5)
         canvas.setFillColor(GREY)
-        canvas.drawString(x_title, y_top - 0.44*inch, f"{po['vendor_name']} · {po['is_commissary'] and 'Commissary' or 'Purchase'}")
+        kind = po['is_commissary'] and 'Commissary' or 'Purchase'
+        if po['order_type'] == 'unscheduled':
+            kind += f" · Unscheduled ({(po['reason'] or 'other').title()})"
+        canvas.drawString(x_title, y_top - 0.44*inch, f"{po['vendor_name']} · {kind}")
 
         # Right side meta
         meta_x = PAGE_W - MARGIN - 2.2*inch
@@ -421,6 +439,11 @@ def purchase_order_pdf(po_id):
             lines.append(('Shipped', f"{str(po['shipped_at'])[:10]} · {(po['shipped_by'] or '').split('@')[0]}"))
         if po['fulfilled_at']:
             lines.append(('Fulfilled', f"{str(po['fulfilled_at'])[:10]} · {(po['fulfilled_by'] or '').split('@')[0]}"))
+        if po['order_type'] == 'unscheduled':
+            if po['expected_date']:
+                lines.append(('Needed by', str(po['expected_date'])[:10]))
+            if po['reference']:
+                lines.append(('Reference', po['reference']))
         if po['notes']:
             lines.append(('Notes', po['notes']))
 
@@ -491,6 +514,7 @@ def get_purchase_order(po_id):
                 po.shipped_at, po.shipped_by,
                 po.fulfilled_at, po.fulfilled_by,
                 po.sheet_submission_id,
+                po.order_type, po.reason, po.reference,
                 po.created_at, po.updated_at,
                 v.id   AS vendor_id,
                 v.name AS vendor_name,
