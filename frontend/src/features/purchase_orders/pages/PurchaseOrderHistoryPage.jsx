@@ -1,11 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { formatDate, formatDateShort } from '../../../core/utils/dateUtils.js'
+import { formatDateShort } from '../../../core/utils/dateUtils.js'
 import axios from 'axios'
 import { useAuth } from '../../../core/auth/AuthContext.js'
 import { orderReasonLabel } from '../orderConstants.js'
 import '../../../core/styles/shared-ui.css'
 import '../../../core/styles/order-and-print.css'
+
+// Local YYYY-MM-DD, offset by n days (not toISOString, which is UTC)
+const localDate = (n = 0) => {
+  const d = new Date()
+  d.setDate(d.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 const STATUS_BADGE = {
   open:       'badge-warning',
@@ -32,6 +39,9 @@ export default function PurchaseOrderHistoryPage() {
   const [status,      setStatus]      = useState('')
   const [isComm,      setIsComm]      = useState('')
   const [orderType,   setOrderType]   = useState('')
+  const [dateField,   setDateField]   = useState('order')   // 'order' | 'delivery': filter + sort
+  const [dateFrom,    setDateFrom]    = useState('')
+  const [dateTo,      setDateTo]      = useState('')
   const [page,        setPage]        = useState(1)
   const PER_PAGE = 20
 
@@ -44,6 +54,9 @@ export default function PurchaseOrderHistoryPage() {
       if (status)     params.status        = status
       if (isComm)     params.is_commissary = isComm
       if (orderType)  params.order_type    = orderType
+      params.date_field = dateField
+      if (dateFrom)   params.date_from     = dateFrom
+      if (dateTo)     params.date_to       = dateTo
       const res = await axios.get('/api/purchase-orders', { params })
       setOrders(res.data.orders || [])
       setTotal(res.data.total  || 0)
@@ -52,7 +65,7 @@ export default function PurchaseOrderHistoryPage() {
     } finally {
       setLoading(false)
     }
-  }, [locationId, vendorId, status, isComm, orderType, page])
+  }, [locationId, vendorId, status, isComm, orderType, dateField, dateFrom, dateTo, page])
 
   const fetchStatic = useCallback(async () => {
     try {
@@ -68,11 +81,15 @@ export default function PurchaseOrderHistoryPage() {
   }, [])
 
   useEffect(() => { fetchStatic() }, [fetchStatic])
-  useEffect(() => { setPage(1) }, [locationId, vendorId, status, isComm, orderType])
+  useEffect(() => { setPage(1) }, [locationId, vendorId, status, isComm, orderType, dateField, dateFrom, dateTo])
   useEffect(() => { fetchOrders() }, [fetchOrders])
 
 
   const pages = Math.ceil(total / PER_PAGE)
+
+  const setDay = (n) => { const d = localDate(n); setDateFrom(d); setDateTo(d) }
+  const isDay  = (n) => dateFrom === localDate(n) && dateTo === localDate(n)
+  const byDelivery = dateField === 'delivery'
 
   return (
     <div className="page">
@@ -131,6 +148,30 @@ export default function PurchaseOrderHistoryPage() {
         </select>
       </div>
 
+      {/* Dates: which date to filter + sort by, and the range */}
+      <div className="filter-bar po-date-bar">
+        <select className="input filter-select" value={dateField}
+          onChange={e => setDateField(e.target.value)}>
+          <option value="order">By order date</option>
+          <option value="delivery">By delivery date</option>
+        </select>
+        <input className="input po-date-input" type="date" value={dateFrom} aria-label="From"
+          onChange={e => setDateFrom(e.target.value)} />
+        <span className="po-date-sep">to</span>
+        <input className="input po-date-input" type="date" value={dateTo} min={dateFrom || undefined} aria-label="To"
+          onChange={e => setDateTo(e.target.value)} />
+        <div className="po-date-chips">
+          <button className={`btn btn-ghost po-date-chip ${isDay(0) ? 'is-active' : ''}`} onClick={() => setDay(0)}>Today</button>
+          <button className={`btn btn-ghost po-date-chip ${isDay(1) ? 'is-active' : ''}`} onClick={() => setDay(1)}>Tomorrow</button>
+          {(dateFrom || dateTo) && (
+            <button className="btn btn-ghost po-date-chip" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear dates</button>
+          )}
+        </div>
+        {byDelivery && (dateFrom || dateTo) && (
+          <span className="po-date-note">Orders with no delivery date are left out</span>
+        )}
+      </div>
+
       {/* Table */}
       {loading ? (
         <div className="spinner">Loading orders...</div>
@@ -140,7 +181,8 @@ export default function PurchaseOrderHistoryPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Date</th>
+                  <th className={!byDelivery ? 'po-sorted' : ''}>Ordered</th>
+                  <th className={byDelivery ? 'po-sorted' : ''}>Delivery</th>
                   <th>Location</th>
                   <th>Vendor</th>
                   <th>Type</th>
@@ -152,14 +194,17 @@ export default function PurchaseOrderHistoryPage() {
               <tbody>
                 {orders.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                    <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
                       No orders found.
                     </td>
                   </tr>
                 ) : orders.map(o => (
                   <tr key={o.id} className="row-link"
                     onClick={() => navigate(`/orders/${o.id}`)}>
-                    <td>{formatDate(o.order_date)}</td>
+                    <td style={{ fontWeight: byDelivery ? 400 : 500 }}>{formatDateShort(o.order_date)}</td>
+                    <td style={{ fontWeight: byDelivery ? 500 : 400, color: o.expected_date ? undefined : 'var(--text-muted)' }}>
+                      {o.expected_date ? formatDateShort(o.expected_date) : '—'}
+                    </td>
                     <td style={{ color: 'var(--text-secondary)' }}>{o.location_name}</td>
                     <td style={{ fontWeight: 500 }}>{o.vendor_name}</td>
                     <td>

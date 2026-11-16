@@ -339,10 +339,13 @@ def get_transfer(transfer_id):
             items = conn.execute(text("""
                 SELECT ti.id, ti.product_id, ti.product_name, ti.quantity, ti.unit_id,
                        u.name AS unit, ti.base_quantity, ti.base_unit_id, bu.name AS base_unit,
-                       ti.received_quantity, ti.received_note, ti.notes, ti.sort_order
+                       ti.received_quantity, ti.received_base_quantity, ti.received_base_unit_id,
+                       rbu.name AS received_base_unit,
+                       ti.received_note, ti.notes, ti.sort_order
                 FROM transfer_items ti
                 LEFT JOIN units u  ON u.id  = ti.unit_id
                 LEFT JOIN units bu ON bu.id = ti.base_unit_id
+                LEFT JOIN units rbu ON rbu.id = ti.received_base_unit_id
                 WHERE ti.transfer_id = :id
                 ORDER BY ti.sort_order, ti.product_name
             """), {'id': transfer_id}).mappings().all()
@@ -488,6 +491,7 @@ def receive_transfer(transfer_id):
     Receiving store (or admin): sent -> received.
     Body: { items: [{id, received_quantity, received_note}], received_note }
     A line not listed is received in full (received_quantity = quantity).
+    Each line also stores received_base_quantity + received_base_unit_id.
     """
     data = request.get_json(force=True) or {}
 
@@ -504,20 +508,39 @@ def receive_transfer(transfer_id):
                 raise TransferError('Received quantity cannot be negative')
             by_id[iid] = {'rq': rq, 'note': (raw.get('received_note') or '').strip() or None}
 
-        lines = conn.execute(text("SELECT id FROM transfer_items WHERE transfer_id = :id"),
-                             {'id': transfer_id}).fetchall()
+        lines = conn.execute(text("""
+            SELECT id, product_id, product_name, quantity, unit_id
+            FROM transfer_items WHERE transfer_id = :id
+        """), {'id': transfer_id}).fetchall()
         unknown = set(by_id) - {r.id for r in lines}
         if unknown:
             raise TransferError(f'Line(s) {sorted(unknown)} are not on this transfer')
 
+        # Received amount in base units, converted now (base unit from products,
+        # today's conversion), same as every other saved amount.
+        pids       = [r.product_id for r in lines]
+        base_units = load_base_units(conn, pids)
+        conv_map   = load_conversion_map(conn, pids, {r.unit_id for r in lines}, set(base_units.values()))
+
         for r in lines:
-            v = by_id.get(r.id, {})
+            v  = by_id.get(r.id, {})
+            rq = v.get('rq')
+            if rq is None:
+                rq = float(r.quantity)
+            base_unit = base_units.get(r.product_id)
+            f = base_factor(conv_map, r.unit_id, base_unit, r.product_id)
+            if f is None:
+                raise TransferError(f"{r.product_name}: its unit no longer converts to the product's base unit. "
+                                    "Fix the conversion on the product, then receive again.")
             conn.execute(text("""
                 UPDATE transfer_items SET
-                    received_quantity = COALESCE(:rq, quantity),
-                    received_note     = :note
+                    received_quantity      = :rq,
+                    received_base_quantity = :rbq,
+                    received_base_unit_id  = :rbu,
+                    received_note          = :note
                 WHERE id = :id
-            """), {'id': r.id, 'rq': v.get('rq'), 'note': v.get('note')})
+            """), {'id': r.id, 'rq': rq, 'rbq': round(rq * f, 4), 'rbu': base_unit,
+                   'note': v.get('note')})
 
         conn.execute(text("""
             UPDATE transfers SET status = 'received', received_at = NOW(), received_by = :by,

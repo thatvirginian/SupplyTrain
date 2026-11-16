@@ -245,6 +245,9 @@ export default function TransferDetailPage() {
                     <>
                       <span className={`xfer-num ${diff ? 'xfer-diff' : ''}`}>
                         {isReceived ? fmtQty(i.received_quantity) : ''}
+                        {isReceived && i.received_base_unit && i.received_base_unit_id !== i.unit_id && (
+                          <span className="xfer-base">= {fmtQty(i.received_base_quantity)} {i.received_base_unit}</span>
+                        )}
                       </span>
                       <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                         {isReceived ? (i.received_note || '') : ''}
