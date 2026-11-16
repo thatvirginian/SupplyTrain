@@ -8,6 +8,8 @@
 #
 # Endpoints in this file:
 #   GET     /api/purchase-orders                             list_purchase_orders
+#           filters: location_id, vendor_id, status, is_commissary, order_type,
+#                    date_field=order|delivery, date_from, date_to (inclusive)
 #   GET     /api/purchase-orders/<int:po_id>/pdf             purchase_order_pdf
 #   GET     /api/purchase-orders/<int:po_id>                 get_purchase_order
 #   DELETE  /api/purchase-orders/<int:po_id>                 delete_purchase_order
@@ -23,6 +25,7 @@
 
 from flask import Blueprint, jsonify, request, g
 from sqlalchemy import text
+from datetime import date
 import logging
 
 from core.auth import (
@@ -61,6 +64,11 @@ def list_purchase_orders():
     status       = request.args.get('status')
     is_comm      = request.args.get('is_commissary')
     order_type   = request.args.get('order_type')
+    # Dates: ?date_field=order|delivery picks which date the from/to filter
+    # and the sort use. delivery = expected_date (ETA / Needed by).
+    date_field   = request.args.get('date_field', 'order')
+    date_from    = request.args.get('date_from') or None
+    date_to      = request.args.get('date_to') or None
     page         = request.args.get('page', 1, type=int)
     per_page     = request.args.get('per_page', 20, type=int)
     offset       = (page - 1) * per_page
@@ -93,6 +101,24 @@ def list_purchase_orders():
         filters.append('po.order_type = :order_type')
         params['order_type'] = order_type
 
+    for d in (date_from, date_to):
+        if d:
+            try:
+                date.fromisoformat(d)
+            except ValueError:
+                return jsonify({'error': f'Bad date: {d} (use YYYY-MM-DD)'}), 400
+
+    date_col = 'po.expected_date' if date_field == 'delivery' else 'po.order_date'
+    if date_from:
+        filters.append(f'{date_col} >= CAST(:date_from AS date)')
+        params['date_from'] = date_from
+    if date_to:
+        filters.append(f'{date_col} <= CAST(:date_to AS date)')
+        params['date_to'] = date_to
+    # Orders with no delivery date sort last when sorting by delivery
+    order_by = ('po.expected_date DESC NULLS LAST, po.order_date DESC, po.created_at DESC'
+                if date_field == 'delivery' else 'po.order_date DESC, po.created_at DESC')
+
     where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
 
     with get_engine().connect() as conn:
@@ -117,7 +143,7 @@ def list_purchase_orders():
             LEFT JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
             {where}
             GROUP BY po.id, v.id, v.name, l.location_name
-            ORDER BY po.order_date DESC, po.created_at DESC
+            ORDER BY {order_by}
             LIMIT :limit OFFSET :offset
         """), params).mappings().all()
 

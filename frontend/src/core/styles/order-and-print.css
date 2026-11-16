@@ -132,3 +132,18 @@
 }
 
 
+
+/* ── Order History: date filter row ─────────────────────────────────────── */
+.po-date-bar        { align-items: center; }
+.po-date-input      { width: 150px; }
+.po-date-sep        { font-size: 0.75rem; color: var(--text-muted); }
+.po-date-chips      { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.po-date-chip       { padding: 0.35rem 0.7rem; font-size: 0.75rem; }
+.po-date-chip.is-active { border-color: var(--accent); color: var(--accent); }
+.po-date-note       { font-size: 0.7rem; color: var(--text-muted); }
+th.po-sorted::after { content: ' ↓'; color: var(--accent); }
+
+@media (max-width: 768px) {
+  .po-date-input { width: 100%; }
+  .po-date-sep   { display: none; }
+}
