@@ -28,6 +28,7 @@ import UnscheduledOrderNewPage     from './features/purchase_orders/pages/Unsche
 import TransferListPage            from './features/transfers/pages/TransferListPage.jsx'
 import TransferNewPage             from './features/transfers/pages/TransferNewPage.jsx'
 import TransferDetailPage          from './features/transfers/pages/TransferDetailPage.jsx'
+import UsagePage                   from './features/usage/pages/UsagePage.jsx'
 
 function App() {
   const [user, setUser]     = useState(null)
@@ -143,6 +144,11 @@ function App() {
               <Route path="transfers"                element={<TransferListPage />} />
               <Route path="transfers/new"            element={<TransferNewPage />} />
               <Route path="transfers/:id"            element={<TransferDetailPage />} />
+            </>}
+
+            {/* Usage: managers (admin, gm, commissary gm) */}
+            {isManager && <>
+              <Route path="usage"                    element={<UsagePage />} />
             </>}
 
             {/* 404 */}

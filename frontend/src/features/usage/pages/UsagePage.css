@@ -1,0 +1,128 @@
+/* UsagePage: usage per product, count to count */
+
+.usage-empty {
+  padding:    2rem;
+  text-align: center;
+  color:      var(--text-muted);
+}
+
+.usage-date { width: 150px; }
+.usage-to   { font-size: 0.75rem; color: var(--text-muted); align-self: center; }
+
+.usage-table td { vertical-align: top; }
+
+.usage-category-row td {
+  background:     var(--bg-raised);
+  color:          var(--text-secondary);
+  font-size:      0.65rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding:        0.4rem 1rem;
+}
+.usage-category-row:hover { background: none; }
+
+.usage-caret   { display: inline-block; width: 1rem; color: var(--text-muted); font-size: 0.7rem; }
+.usage-product { font-weight: 500; }
+.usage-sub     { font-size: 0.7rem; color: var(--text-muted); margin-left: 1rem; }
+
+.usage-num {
+  text-align:  right;
+  font-family: var(--font-mono);
+  font-size:   0.82rem;
+  white-space: nowrap;
+}
+.usage-table th.usage-num { font-family: inherit; font-size: inherit; }
+.usage-strong { font-weight: 600; }
+.usage-extra  { color: var(--text-muted); }
+.usage-neg    { color: var(--error); }
+
+.usage-chip {
+  display:       inline-block;
+  margin:        0 0.35rem 0.2rem 0;
+  padding:       0.15rem 0.45rem;
+  border:        1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size:     0.72rem;
+  color:         var(--text-secondary);
+  white-space:   nowrap;
+}
+.usage-chip b     { font-family: var(--font-mono); color: var(--text-primary); }
+.usage-chip-n     { margin-left: 0.2rem; font-size: 0.62rem; color: var(--text-muted); }
+
+.usage-flag-count { font-size: 0.7rem; color: var(--warning); white-space: nowrap; }
+
+/* Expanded product: its windows */
+.usage-detail-row > td { background: var(--bg-raised); padding: 0.5rem 1rem 0.75rem; }
+.usage-detail-row:hover { background: none; }
+
+.usage-windows {
+  width:         100%;
+  background:    var(--bg-surface);
+  border:        1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.usage-windows th {
+  font-size:      0.62rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color:          var(--text-muted);
+  padding:        0.4rem 0.6rem;
+  border-bottom:  1px solid var(--border-light);
+  text-align:     left;
+}
+.usage-windows th.usage-num { text-align: right; }
+.usage-windows td {
+  padding:       0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border-light);
+  font-size:     0.8rem;
+}
+.usage-off td { color: var(--text-muted); }
+
+.usage-tag {
+  display:        inline-block;
+  margin-left:    0.4rem;
+  padding:        0.05rem 0.35rem;
+  border-radius:  var(--radius-sm);
+  background:     rgba(148,163,184,0.18);
+  color:          var(--text-muted);
+  font-size:      0.6rem;
+  font-weight:    600;
+  text-transform: uppercase;
+}
+.usage-tag-warn { background: rgba(217,119,6,0.12); color: var(--warning); }
+
+/* Where a window's number came from */
+.usage-sources-row > td { background: var(--bg-base); }
+.usage-sources {
+  list-style: none;
+  margin:     0;
+  padding:    0.2rem 0 0.2rem 1rem;
+}
+.usage-sources li {
+  display:     grid;
+  grid-template-columns: 80px 1fr 120px 80px;
+  gap:         0.5rem;
+  padding:     0.2rem 0;
+  font-size:   0.76rem;
+  align-items: baseline;
+}
+.usage-src-date { color: var(--text-muted); }
+.usage-src-as   { color: var(--text-secondary); font-size: 0.7rem; }
+.usage-src-qty  { text-align: right; font-family: var(--font-mono); }
+.usage-src-flag { display: block !important; color: var(--warning); }
+
+.usage-link { color: var(--info); cursor: pointer; text-decoration: none; }
+.usage-link:hover { text-decoration: underline; }
+
+@media (max-width: 768px) {
+  .usage-date { width: 100%; }
+  .usage-to   { display: none; }
+  .usage-windows th:nth-child(2), .usage-windows td:nth-child(2),
+  .usage-windows th:nth-child(5), .usage-windows td:nth-child(5) { display: none; }
+  .usage-sources li { grid-template-columns: 60px 1fr 70px; }
+  .usage-src-as { display: none; }
+}
