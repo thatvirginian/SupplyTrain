@@ -2,9 +2,12 @@
 // features/usage/pages/UsagePage.jsx      URL: /usage
 // =============================================================================
 // Actual usage for one store, count to count (each "window" = from one count to
-// the next). Per product: the normal regular usage per order day (median of the
-// last 4 windows), totals for the range, and every window with how its number
-// was reached:
+// the next). Counts are end of day, so a window is labelled by the days it
+// covers: Monday count -> Wednesday count = Tue -> Wed.
+// Which counts make the windows: order sheets (OH), inventories, or all.
+// Per product: the normal regular usage per window (median of the last 4 usual
+// windows for that order day), totals for the range, and every window with how
+// its number was reached:
 //   start + received + transfers in - transfers out - end = actual
 //   actual - extra orders = regular
 // Each received order / transfer / count opens its source.
@@ -33,6 +36,13 @@ const fmtDay = (s) => {
 
 const SHORT_DAY = { Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' }
 
+// Which counts make the windows (?source=)
+const SOURCES = [
+  { value: 'oh',  label: 'Order sheets', title: 'Windows between order sheets (OH): usage as the ordering sees it' },
+  { value: 'inv', label: 'Inventories',  title: 'Windows between standalone inventories (not order sheets)' },
+  { value: 'all', label: 'All counts',   title: "Windows between every day's count, whatever it came from" },
+]
+
 const SOURCE_LINK = { order: id => `/orders/${id}`, transfer: id => `/transfers/${id}` }
 
 const COUNTS_AS = {
@@ -54,6 +64,7 @@ export default function UsagePage() {
   const [search,     setSearch]     = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [inBase,     setInBase]     = useState(false)    // show base units instead of display units
+  const [source,     setSource]     = useState('oh')     // oh | inv | all
   const debouncedSearch = useDebounce(search, 300)
 
   const [data,     setData]     = useState(null)
@@ -74,7 +85,7 @@ export default function UsagePage() {
     setLoading(true)
     setError(null)
     try {
-      const params = { date_from: dateFrom, date_to: dateTo }
+      const params = { date_from: dateFrom, date_to: dateTo, source }
       if (isAdmin)         params.location_id = locationId
       if (debouncedSearch) params.search      = debouncedSearch
       if (categoryId)      params.category_id = categoryId
@@ -86,7 +97,7 @@ export default function UsagePage() {
     } finally {
       setLoading(false)
     }
-  }, [isAdmin, locationId, dateFrom, dateTo, debouncedSearch, categoryId])
+  }, [isAdmin, locationId, dateFrom, dateTo, debouncedSearch, categoryId, source])
 
   useEffect(() => { fetchUsage() }, [fetchUsage])
 
@@ -120,7 +131,7 @@ export default function UsagePage() {
           <h1 className="page-title">Usage</h1>
           <p className="page-subtitle">
             {data
-              ? <>{data.location_name} · count to count · regular = actual − extra orders</>
+              ? <>{data.location_name} · {SOURCES.find(x => x.value === data.source)?.label.toLowerCase()} · regular = actual − extra orders</>
               : 'What each store used between counts'}
           </p>
         </div>
@@ -146,6 +157,14 @@ export default function UsagePage() {
             {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         )}
+        <div className="usage-source" role="group" aria-label="Counts used">
+          {SOURCES.map(x => (
+            <button key={x.value} type="button" title={x.title}
+              className={source === x.value ? 'is-active' : ''} onClick={() => setSource(x.value)}>
+              {x.label}
+            </button>
+          ))}
+        </div>
         <label className="filter-toggle">
           <input type="checkbox" checked={inBase} onChange={e => setInBase(e.target.checked)} />
           Base units
@@ -173,7 +192,8 @@ export default function UsagePage() {
 
       {data && data.products.length === 0 && !loading && (
         <div className="card usage-empty">
-          No usage in this range. Usage needs two counts of a product; check the dates and that the store's counts were submitted.
+          No usage in this range. Usage needs two counts of a product from the chosen source
+          ({SOURCES.find(x => x.value === source)?.label.toLowerCase()}); check the dates, the source, and that the counts were submitted.
         </div>
       )}
 
@@ -183,7 +203,7 @@ export default function UsagePage() {
             <thead>
               <tr>
                 <th>Product</th>
-                <th title="Median regular usage of the last 4 windows that start on that order day">Normal per order day</th>
+                <th title="Per par day (the day of the count and order): median regular usage of the last 4 usual windows that order has to cover">Median per par day</th>
                 <th className="usage-num">Actual</th>
                 <th className="usage-num">Extra orders</th>
                 <th className="usage-num">Regular</th>
@@ -205,11 +225,12 @@ export default function UsagePage() {
                         </td>
                         <td>
                           {p.normal_by_order_day.length === 0
-                            ? <span className="usage-sub" title="Only windows between two consecutive order sheet days count here">none on the order schedule yet</span>
+                            ? <span className="usage-sub">no usual windows yet</span>
                             : p.normal_by_order_day.map(n => (
                               <span key={n.order_day} className="usage-chip"
-                                title={`${n.order_day} order: median of ${n.windows} window${n.windows === 1 ? '' : 's'}`}>
+                                title={`${n.order_day} par: what the ${n.order_day} order has to cover, ${n.covers} (${n.days} day${n.days === 1 ? '' : 's'}). Median of the last ${n.windows} window${n.windows === 1 ? '' : 's'}`}>
                                 {SHORT_DAY[n.order_day]} <b>{qty(p, n.median_regular)}</b>
+                                <span className="usage-chip-covers">{n.covers}</span>
                                 {n.windows < 4 && <span className="usage-chip-n">({n.windows})</span>}
                               </span>
                             ))}
@@ -245,7 +266,7 @@ function WindowTable({ p, qty, openWin, toggleWin, navigate }) {
     <table className="usage-windows">
       <thead>
         <tr>
-          <th>Window (count to count)</th>
+          <th title="Counts are end of day: the Monday count to the Wednesday count covers Tue → Wed">Days covered</th>
           <th className="usage-num">Start</th>
           <th className="usage-num">+ Received</th>
           <th className="usage-num">± Transfers</th>
@@ -262,12 +283,16 @@ function WindowTable({ p, qty, openWin, toggleWin, navigate }) {
           const net = w.transfers_in - w.transfers_out
           return (
             <Fragment key={key}>
-              <tr className={`row-link ${w.fits_schedule ? '' : 'usage-off'}`} onClick={() => toggleWin(key)}>
+              <tr className={`row-link ${w.usual ? '' : 'usage-off'}`} onClick={() => toggleWin(key)}>
                 <td>
                   <span className="usage-caret">{shown ? '▾' : '▸'}</span>
-                  {fmtDay(w.start_date)} → {fmtDay(w.end_date)}
-                  {!w.fits_schedule && <span className="usage-tag">skipped count</span>}
-                  {w.flags.filter(f => f.code !== 'off_schedule').map(f => (
+                  {w.covers_from === w.end_date ? fmtDay(w.end_date) : <>{fmtDay(w.covers_from)} → {fmtDay(w.end_date)}</>}
+                  {!w.usual && (
+                    <span className="usage-tag" title={w.flags.find(f => f.code.endsWith('_than_usual'))?.text}>
+                      {w.flags.some(f => f.code === 'longer_than_usual') ? 'missed count' : 'extra count'}
+                    </span>
+                  )}
+                  {w.flags.filter(f => !f.code.endsWith('_than_usual')).map(f => (
                     <span key={f.code} className="usage-tag usage-tag-warn" title={f.text}>⚠</span>
                   ))}
                 </td>

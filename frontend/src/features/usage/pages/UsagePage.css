@@ -7,6 +7,28 @@
 }
 
 .usage-date { width: 150px; }
+
+/* Order sheets / Inventories / All counts */
+.usage-source {
+  display:       inline-flex;
+  border:        1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow:      hidden;
+}
+.usage-source button {
+  padding:    0.45rem 0.7rem;
+  background: var(--bg-surface);
+  border:     none;
+  font-size:  0.78rem;
+  color:      var(--text-secondary);
+  cursor:     pointer;
+}
+.usage-source button + button { border-left: 1px solid var(--border); }
+.usage-source button.is-active {
+  background:  var(--text-primary);
+  color:       var(--accent-y);
+  font-weight: 600;
+}
 .usage-to   { font-size: 0.75rem; color: var(--text-muted); align-self: center; }
 
 .usage-table td { vertical-align: top; }
@@ -48,6 +70,7 @@
   white-space:   nowrap;
 }
 .usage-chip b     { font-family: var(--font-mono); color: var(--text-primary); }
+.usage-chip-covers { margin-left: 0.25rem; font-size: 0.62rem; color: var(--text-muted); }
 .usage-chip-n     { margin-left: 0.2rem; font-size: 0.62rem; color: var(--text-muted); }
 
 .usage-flag-count { font-size: 0.7rem; color: var(--warning); white-space: nowrap; }

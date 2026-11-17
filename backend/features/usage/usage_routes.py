@@ -23,11 +23,24 @@
 # A delivery received on day D belongs to the window (start, end] that holds D:
 # received the same day as the start count -> it was in that count already.
 #
-# Windows come from each product's own counts, so a product skipped on one
-# count gets one longer window (still correct usage). A window "fits the
-# schedule" when its start and end are consecutive order sheet days (the
-# store's ordering rhythm; any count day if it has none). Only those feed
-# the normal usage per order day (median regular of the last 4).
+# WHICH COUNTS make the windows (?source=):
+#   oh   order sheets only (default): windows run from one order sheet that
+#        counted the product to the next one. A product on the sheet once a
+#        week gets weekly windows; three times a week, three windows.
+#   inv  standalone inventories only (no order sheet)
+#   all  the day's count, whatever it came from (inventory_counts)
+# For oh / inv each day uses that source's latest submitted count.
+#
+# A window is labelled by the days it COVERS: counts are end of day, so the
+# Monday count to the Wednesday count covers Tue -> Wed. The ORDER DAY is
+# the start count's day (the Monday order covers Tue -> Wed).
+#
+# Each product's windows come from its own counts. Per order day, its usual
+# window length is the most common one (e.g. Mon -> Wed = 2 days). A window
+# that is longer (a count was missed) or shorter (an extra count) is still
+# correct usage but is flagged and left out of the normal usage per order
+# day = median regular of the last 4 usual windows (looking back before the
+# selected range too, so the number does not depend on the range).
 #
 # All amounts are base quantities. Each stored amount is converted from its
 # own base unit to the product's current base unit with today's conversions;
@@ -57,7 +70,8 @@ bp = Blueprint('usage_routes', __name__, url_prefix='/api')
 # local date). One setting for now; per-location later if stores span zones.
 STORE_TZ = os.environ.get('STORE_TIMEZONE', 'America/New_York')
 
-LOOKBACK_DAYS = 60       # how far before date_from to look for each product's start count
+LOOKBACK_DAYS = 60       # how far before date_from to look (start counts + normal usage history)
+SOURCES = {'oh': 'count_sheet', 'inv': 'manual'}
 WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 
@@ -84,6 +98,7 @@ def get_usage():
         date_to       YYYY-MM-DD  windows ending on or before this day (default today)
         search        product name contains
         category_id   optional
+        source        oh (order sheets, default) | inv (inventories) | all
     """
     try:
         date_to   = date.fromisoformat(request.args.get('date_to') or date.today().isoformat())
@@ -94,6 +109,9 @@ def get_usage():
         return jsonify({'error': 'From date is after To date'}), 400
     search      = (request.args.get('search') or '').strip()
     category_id = request.args.get('category_id', type=int)
+    source      = request.args.get('source', 'oh')
+    if source not in ('oh', 'inv', 'all'):
+        return jsonify({'error': 'source must be oh, inv or all'}), 400
 
     with get_engine().connect() as conn:
         if _is_admin():
@@ -126,36 +144,41 @@ def get_usage():
             params['category_id'] = category_id
         pwhere = ('AND ' + ' AND '.join(pfilters)) if pfilters else ''
 
-        counts = conn.execute(text(f"""
-            SELECT ic.product_id, ic.count_date, ic.base_quantity, ic.base_unit_id,
-                   ic.inventory_submission_id
-            FROM inventory_counts ic
-            JOIN products p ON p.id = ic.product_id
-            WHERE ic.location_id = :loc
-              AND ic.count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
-              AND ic.base_quantity IS NOT NULL
-              {pwhere}
-            ORDER BY ic.product_id, ic.count_date
-        """), params).mappings().all()
-
-        # Schedule days = days the store submitted an order sheet (its ordering
-        # rhythm). A small manual count mid-week is not a schedule day. Stores
-        # with no order sheets: every count day.
-        store_days = sorted({_d(r['count_date']) for r in conn.execute(text("""
-            SELECT DISTINCT count_date FROM inventory_submissions
-            WHERE location_id = :loc AND status = 'submitted' AND source = 'count_sheet'
-              AND count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
-        """), params).mappings().all()})
-        if not store_days:
-            store_days = sorted({_d(r['count_date']) for r in conn.execute(text("""
-                SELECT DISTINCT count_date FROM inventory_counts
-                WHERE location_id = :loc
-                  AND count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
-            """), params).mappings().all()})
+        if source == 'all':
+            counts = conn.execute(text(f"""
+                SELECT ic.product_id, ic.count_date, ic.base_quantity, ic.base_unit_id,
+                       ic.inventory_submission_id
+                FROM inventory_counts ic
+                JOIN products p ON p.id = ic.product_id
+                WHERE ic.location_id = :loc
+                  AND ic.count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
+                  AND ic.base_quantity IS NOT NULL
+                  {pwhere}
+                ORDER BY ic.product_id, ic.count_date
+            """), params).mappings().all()
+        else:
+            # One source only: its latest submitted count per product per day
+            params['src'] = SOURCES[source]
+            counts = conn.execute(text(f"""
+                SELECT DISTINCT ON (isc.product_id, ivs.count_date)
+                       isc.product_id, ivs.count_date, isc.base_quantity, isc.base_unit_id,
+                       ivs.id AS inventory_submission_id
+                FROM inventory_submission_counts isc
+                JOIN inventory_submissions ivs ON ivs.id = isc.inventory_submission_id
+                JOIN products p ON p.id = isc.product_id
+                WHERE ivs.location_id = :loc
+                  AND ivs.status = 'submitted'
+                  AND ivs.source = :src
+                  AND ivs.count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
+                  AND isc.base_quantity IS NOT NULL
+                  {pwhere}
+                ORDER BY isc.product_id, ivs.count_date,
+                         ivs.submitted_at DESC NULLS LAST, ivs.id DESC
+            """), params).mappings().all()
 
         product_ids = sorted({r['product_id'] for r in counts})
         if not product_ids:
-            return jsonify(_empty(location, date_from, date_to, store_days))
+            return jsonify(_empty(location, date_from, date_to, source))
         params['pids'] = product_ids
 
         products = {r['id']: dict(r) for r in conn.execute(text("""
@@ -236,8 +259,6 @@ def get_usage():
         f = base_factor(conv_map, unit_id, products[pid]['base_unit_id'], pid)
         return None if f is None else float(qty) * f
 
-    store_next = {store_days[i]: store_days[i + 1] for i in range(len(store_days) - 1)}
-
     by_pid = {}
     for r in counts:
         by_pid.setdefault(r['product_id'], []).append(r)
@@ -250,32 +271,54 @@ def get_usage():
     out = []
     for pid, plist in by_pid.items():
         p = products[pid]
-        windows = []
-        for a, b in zip(plist, plist[1:]):
-            start_day, end_day = _d(a['count_date']), _d(b['count_date'])
-            if not (date_from <= end_day <= date_to):
-                continue
-            w = _window(pid, a, b, start_day, end_day, rec_by_pid.get(pid, []),
-                        tr_by_pid.get(pid, []), to_base, store_next)
-            windows.append(w)
-        if not windows:
+        # Every window in the fetched history (lookback included): the usual
+        # length per order day and the normal usage need history; only the
+        # windows ending in the range are listed.
+        history = [_window(pid, a, b, _d(a['count_date']), _d(b['count_date']),
+                           rec_by_pid.get(pid, []), tr_by_pid.get(pid, []), to_base)
+                   for a, b in zip(plist, plist[1:])]
+        if not any(date_from <= _d(w['end_date']) <= date_to for w in history):
             continue
 
-        # Normal usage per order day: median regular of the last 4 schedule windows
-        normal = {}
-        for w in sorted(windows, key=lambda x: x['start_date'], reverse=True):
-            if not w['fits_schedule'] or w['regular'] is None:
-                continue
-            day = WEEKDAYS[_d(w['start_date']).weekday()]
-            normal.setdefault(day, [])
-            if len(normal[day]) < 4:
-                normal[day].append(w['regular'])
-        normal_out = [{
-            'order_day': day,
-            'median_regular': round(median(vals), 4),
-            'windows': len(vals),
-        } for day, vals in sorted(normal.items(), key=lambda kv: WEEKDAYS.index(kv[0]))]
+        # Usual window length per order day = the most common (ties: shorter)
+        lengths = {}
+        for w in history:
+            lengths.setdefault(w['order_day'], []).append(w['days'])
+        usual = {day: min(set(ls), key=lambda n: (-ls.count(n), n)) for day, ls in lengths.items()}
+        for w in history:
+            u = usual[w['order_day']]
+            w['usual'] = w['days'] == u
+            if w['days'] > u:
+                w['flags'].append({'code': 'longer_than_usual',
+                    'text': f"{w['days']} days instead of the usual {u}: a count was missed. "
+                            "Usage is still right; left out of the normal per order day."})
+            elif w['days'] < u:
+                w['flags'].append({'code': 'shorter_than_usual',
+                    'text': f"{w['days']} days instead of the usual {u}: an extra count. "
+                            "Usage is still right; left out of the normal per order day."})
 
+        # Normal usage per order day: median regular of the last 4 usual windows
+        normal = {}
+        for w in sorted(history, key=lambda x: x['start_date'], reverse=True):
+            if not w['usual'] or w['regular'] is None or _d(w['end_date']) > date_to:
+                continue
+            normal.setdefault(w['order_day'], [])
+            if len(normal[w['order_day']]) < 4:
+                normal[w['order_day']].append(w['regular'])
+        normal_out = []
+        for day, vals in sorted(normal.items(), key=lambda kv: WEEKDAYS.index(kv[0])):
+            u = usual[day]
+            first = WEEKDAYS[(WEEKDAYS.index(day) + 1) % 7]
+            last  = WEEKDAYS[(WEEKDAYS.index(day) + u) % 7]
+            normal_out.append({
+                'order_day':      day,
+                'covers':         first[:3] if u == 1 else f'{first[:3]}–{last[:3]}',
+                'days':           u,
+                'median_regular': round(median(vals), 4),
+                'windows':        len(vals),
+            })
+
+        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to]
         disp_f = base_factor(conv_map, p['display_unit_id'], p['base_unit_id'], pid)
         tot = lambda k: round(sum(w[k] for w in windows if w[k] is not None), 4)
         out.append({
@@ -292,8 +335,9 @@ def get_usage():
                 'regular': tot('regular'),
             },
             'normal_by_order_day': normal_out,
-            # Things to check (a skipped count is not one: its usage is still right)
-            'flag_count':      sum(1 for w in windows for f in w['flags'] if f['code'] != 'off_schedule'),
+            # Things to check (an unusual window length is not one: its usage is still right)
+            'flag_count':      sum(1 for w in windows for f in w['flags']
+                                   if f['code'] not in ('longer_than_usual', 'shorter_than_usual')),
             'windows':         sorted(windows, key=lambda x: x['end_date'], reverse=True),
         })
 
@@ -304,7 +348,7 @@ def get_usage():
         'date_from':      date_from.isoformat(),
         'date_to':        date_to.isoformat(),
         'timezone':       STORE_TZ,
-        'store_count_days': [d.isoformat() for d in store_days if date_from - timedelta(days=7) <= d <= date_to],
+        'source':         source,
         'pending_orders': [{'id': r['id'], 'vendor_name': r['vendor_name'],
                             'expected_date': str(r['expected_date'])[:10] if r['expected_date'] else None}
                            for r in pending],
@@ -312,7 +356,7 @@ def get_usage():
     })
 
 
-def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base, store_next):
+def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
     """One product, one count-to-count window."""
     flags, sources = [], []
 
@@ -384,17 +428,13 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base, store_n
             flags.append({'code': 'negative_regular',
                           'text': 'Extra orders delivered more than was used: catering leftover or a miscount'})
 
-    fits = store_next.get(start_day) == end_day
-    if not fits:
-        flags.append({'code': 'off_schedule',
-                      'text': 'Not counted on every count day in between: correct usage, but not used for the normal per order day'})
 
     return {
         'start_date':    start_day.isoformat(),
         'end_date':      end_day.isoformat(),
+        'covers_from':   (start_day + timedelta(days=1)).isoformat(),   # counts are end of day
         'order_day':     WEEKDAYS[start_day.weekday()],
         'days':          (end_day - start_day).days,
-        'fits_schedule': fits,
         'start':         round(start, 4) if start is not None else None,
         'start_inventory_id': a['inventory_submission_id'],
         'received':      round(received, 4),
@@ -410,14 +450,14 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base, store_n
     }
 
 
-def _empty(location, date_from, date_to, store_days):
+def _empty(location, date_from, date_to, source):
     return {
         'location_id':      location['location_id'],
         'location_name':    location['location_name'],
         'date_from':        date_from.isoformat(),
         'date_to':          date_to.isoformat(),
         'timezone':         STORE_TZ,
-        'store_count_days': [d.isoformat() for d in store_days],
+        'source':           source,
         'pending_orders':   [],
         'products':         [],
     }
