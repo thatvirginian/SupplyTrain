@@ -78,10 +78,22 @@ export default function Layout() {
             <NavItem to="/usage"           label="Usage Report"   icon="∿" collapsed={collapsed} end />
             <NavItem to="/usage/par-check" label="Par Check"      icon="⊿" collapsed={collapsed} />
           </>}
+
+          {/* Phones: the sidebar footer is hidden, so Account sits in the nav row */}
+          <div className="nav-mobile-only">
+            <NavItem to="/account" label="Account" icon="◉" collapsed={collapsed} />
+          </div>
         </nav>
 
-        <div className="sidebar-footer">
-          {!collapsed && (
+        {/* Click the name to open the Account page (with Log out) */}
+        <NavLink
+          to="/account"
+          className={({ isActive }) => `sidebar-footer ${isActive ? 'sidebar-footer--active' : ''}`}
+          title={collapsed ? `${user.username} · Account` : 'Account'}
+        >
+          {collapsed ? (
+            <span className="sidebar-avatar">{(user.username || '?').charAt(0).toUpperCase()}</span>
+          ) : (
             <>
               <span className="sidebar-user">{user.username}</span>
               <span className="sidebar-role">
@@ -89,7 +101,7 @@ export default function Layout() {
               </span>
             </>
           )}
-        </div>
+        </NavLink>
       </aside>
 
       {/* ── Main content ── */}

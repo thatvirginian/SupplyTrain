@@ -88,6 +88,25 @@ def me():
     return jsonify(g.user)
 
 
+@app.route('/api/auth/account')
+def account():
+    """Account page: the user plus the store their email is linked to (locations.contact_email), if any."""
+    from sqlalchemy import text
+    email = (g.user.get('email') or '').strip().lower()
+    location_name = None
+    if email:
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(text("""
+                    SELECT location_name FROM locations
+                    WHERE LOWER(TRIM(contact_email)) = :email LIMIT 1
+                """), {'email': email}).fetchone()
+                location_name = row.location_name if row else None
+        except Exception as e:
+            logger.warning(f'account: location lookup failed: {e}')
+    return jsonify({**g.user, 'location_name': location_name})
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 @app.route('/api/health')

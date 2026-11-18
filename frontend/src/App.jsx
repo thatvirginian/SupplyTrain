@@ -30,6 +30,7 @@ import TransferNewPage             from './features/transfers/pages/TransferNewP
 import TransferDetailPage          from './features/transfers/pages/TransferDetailPage.jsx'
 import UsagePage                   from './features/usage/pages/UsagePage.jsx'
 import ParCheckPage                from './features/usage/pages/ParCheckPage.jsx'
+import AccountPage                 from './features/account/pages/AccountPage.jsx'
 
 function App() {
   const [user, setUser]     = useState(null)
@@ -152,6 +153,9 @@ function App() {
               <Route path="usage"                    element={<UsagePage />} />
               <Route path="usage/par-check"          element={<ParCheckPage />} />
             </>}
+
+            {/* Account: everyone signed in (so anyone can log out) */}
+            <Route path="account"                    element={<AccountPage />} />
 
             {/* 404 */}
             <Route path="*" element={
