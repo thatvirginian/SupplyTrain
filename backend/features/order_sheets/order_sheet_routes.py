@@ -275,6 +275,7 @@ def get_sheet_submission(submission_id):
 
         # Active vendor items per product for this location
         vendor_items = {}
+        saved_order  = {}
         if product_ids:
             # Also fetch effective par levels for the submission date
             from datetime import datetime
@@ -310,6 +311,15 @@ def get_sheet_submission(submission_id):
             }).mappings().all()
 
             par_map = {r['product_id']: dict(r) for r in par_rows}
+
+            # Submitted: the par and order as made (snapshot), not today's pars
+            saved = _saved_par_order(conn, submission_id) if submission['status'] == 'submitted' else {}
+            if saved:
+                par_map = {pid: ({'par_qty': v['par_qty'], 'unit_id': v['unit_id'], 'unit_name': v['unit_name']}
+                                 if v['par_qty'] is not None else None)
+                           for pid, v in saved.items()}
+                saved_order = {pid: {'qty': v['order_qty'], 'unit_name': v['order_unit']}
+                               for pid, v in saved.items() if v['order_qty'] is not None}
 
             vi_rows = conn.execute(text("""
                 SELECT
@@ -396,6 +406,8 @@ def get_sheet_submission(submission_id):
             'sort_order':      row['item_sort'],
             'count_units':     item_count_units,
             'par':             par_map.get(pid),
+            # submitted sheets: the order as it was made (None = work it out from par)
+            'saved_order':     saved_order.get(pid),
             'available_units': available_units.get(pid, []),
             'vendor_item':     vendor_items.get(pid),
         })
@@ -414,6 +426,35 @@ def get_sheet_submission(submission_id):
         result['inventory_submission_id'] = inv.id if inv else None
         result['can_edit_inventory']      = can_edit_submitted_inventory()
     return jsonify(result)
+
+
+def _saved_par_order(conn, submission_id):
+    """
+    A SUBMITTED sheet shows the par and order it was made with, not today's
+    par levels (pars change; the sheet must not). The snapshot lives on the
+    inventory the sheet created (inventory_submission_counts: par_qty +
+    par_unit_id as set, order_qty + order_unit_id as ordered).
+    Returns {product_id: {par_qty, unit_id, unit_name, order_qty, order_unit}};
+    empty when the sheet has no inventory (sheets from before inventories),
+    and then the caller falls back to the current par levels.
+    """
+    rows = conn.execute(text("""
+        SELECT isc.product_id, isc.par_qty, isc.par_unit_id, pu.name AS par_unit,
+               isc.order_qty, ou.name AS order_unit
+        FROM inventory_submission_counts isc
+        LEFT JOIN units pu ON pu.id = isc.par_unit_id
+        LEFT JOIN units ou ON ou.id = isc.order_unit_id
+        WHERE isc.inventory_submission_id = (
+            SELECT id FROM inventory_submissions
+            WHERE sheet_submission_id = :id ORDER BY id DESC LIMIT 1)
+    """), {'id': submission_id}).mappings().all()
+    return {r['product_id']: {
+        'par_qty':    float(r['par_qty']) if r['par_qty'] is not None else None,
+        'unit_id':    r['par_unit_id'],
+        'unit_name':  r['par_unit'],
+        'order_qty':  float(r['order_qty']) if r['order_qty'] is not None else None,
+        'order_unit': r['order_unit'],
+    } for r in rows}
 
 
 @bp.route('/sheet-submissions/<int:submission_id>/pdf', methods=['GET'])
@@ -511,6 +552,16 @@ def sheet_submission_pdf(submission_id):
             'location_id':   submission['location_id'],
             'dow':           dow,
         }).mappings().all()
+
+    # Submitted: the par as it was made (snapshot), not today's par levels
+    if submission['status'] == 'submitted':
+        with get_engine().connect() as conn:
+            saved = _saved_par_order(conn, submission_id)
+        if saved:
+            sections_raw = [{**dict(r),
+                             'par_qty':  (saved.get(r['product_id']) or {}).get('par_qty'),
+                             'par_unit': (saved.get(r['product_id']) or {}).get('unit_name')}
+                            for r in sections_raw]
 
     # Build sections dict
     section_map = {}

@@ -112,6 +112,10 @@ export default function OrderSheetPage() {
 
   // ── Order quantity calculation ─────────────────────────────────────────────
   const getOrderQty = (item) => {
+    // Submitted sheet: the order as it was made (server snapshot)
+    if (item.saved_order) {
+      return { qty: item.saved_order.qty, unit: item.saved_order.unit_name, needsConversion: false }
+    }
     const par = item.par
     if (!par || !par.par_qty) return { qty: null, unit: null, needsConversion: false }
 
