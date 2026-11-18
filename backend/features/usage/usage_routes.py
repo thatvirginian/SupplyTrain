@@ -35,12 +35,20 @@
 # Monday count to the Wednesday count covers Tue -> Wed. The ORDER DAY is
 # the start count's day (the Monday order covers Tue -> Wed).
 #
-# Each product's windows come from its own counts. Per order day, its usual
-# window length is the most common one (e.g. Mon -> Wed = 2 days). A window
-# that is longer (a count was missed) or shorter (an extra count) is still
-# correct usage but is flagged and left out of the normal usage per order
-# day = median regular of the last 4 usual windows (looking back before the
+# Each product's windows come from its own counts, on its CURRENT count days
+# (weekdays it was counted on in at least 2 of the last 3 weeks). History is
+# re-cut to those days: counts on other days are skipped, which joins their
+# windows into one wider window with exactly the same usage (the counts in
+# between cancel out). So when a product goes from 3x to 1x a week, its old
+# weeks read as Mon -> Mon and the new Monday median has history at once.
+# Going the other way (1x -> 3x) cannot be split; the new order days build
+# up their own history. The usual length per order day comes from the
+# schedule (days to the next count day). A window that is longer (a missed
+# count, or an older schedule) or shorter (an extra count) is still correct
+# usage but is flagged and left out of the normal usage per order day =
+# median regular of the last 4 usual windows (looking back before the
 # selected range too, so the number does not depend on the range).
+# Par Check uses real (not joined) windows only.
 #
 # All amounts are base quantities. Each stored amount is converted from its
 # own base unit to the product's current base unit with today's conversions;
@@ -304,29 +312,49 @@ def _load(args):
 
     for pid, plist in by_pid.items():
         p = products[pid]
-        # Every window in the fetched history (lookback included)
-        history = [_window(pid, a, b, _d(a['count_date']), _d(b['count_date']),
-                           rec_by_pid.get(pid, []), tr_by_pid.get(pid, []), to_base)
-                   for a, b in zip(plist, plist[1:])]
+        # The product's CURRENT count days, then every window (history
+        # included) from counts on those days only. Usage adds up across
+        # windows, so skipping a count joins two windows into one exact wider
+        # window: after a 3x -> 1x change the old weeks read as Mon -> Mon.
+        days = _count_days(plist)
+        kept = [c for c in plist if days is None or _d(c['count_date']).weekday() in days]
+        if days is not None and len(kept) < 2:
+            days, kept = None, plist
+        pos = {id(c): i for i, c in enumerate(plist)}
+        history = []
+        for a, b in zip(kept, kept[1:]):
+            w = _window(pid, a, b, _d(a['count_date']), _d(b['count_date']),
+                        rec_by_pid.get(pid, []), tr_by_pid.get(pid, []), to_base)
+            w['skipped_counts'] = pos[id(b)] - pos[id(a)] - 1
+            history.append(w)
         if not any(date_from <= _d(w['end_date']) <= date_to for w in history):
             continue
 
-        # Usual window length per order day = the most common (ties: shorter)
-        lengths = {}
+        # Usual window length per order day: from the current schedule (days
+        # to the next count day); without a schedule, the most common length.
+        if days is not None:
+            usual = {WEEKDAYS[d]: _gap_to_next(d, days) for d in days}
+        else:
+            lengths = {}
+            for w in history:
+                lengths.setdefault(w['order_day'], []).append(w['days'])
+            usual = {day: min(set(ls), key=lambda n: (-ls.count(n), n)) for day, ls in lengths.items()}
         for w in history:
-            lengths.setdefault(w['order_day'], []).append(w['days'])
-        usual = {day: min(set(ls), key=lambda n: (-ls.count(n), n)) for day, ls in lengths.items()}
-        for w in history:
-            u = usual[w['order_day']]
+            u = usual.get(w['order_day'], w['days'])
             w['usual'] = w['days'] == u
+            if w['skipped_counts']:
+                w['flags'].append({'code': 'joined',
+                    'text': f"Joined: {w['skipped_counts']} count{'s' if w['skipped_counts'] != 1 else ''} in between "
+                            "skipped to match the current count days. Usage is exact (the counts in between cancel out)."})
             if w['days'] > u:
                 w['flags'].append({'code': 'longer_than_usual',
-                    'text': f"{w['days']} days instead of the usual {u}: a count was missed. "
-                            "Usage is still right; left out of the normal per order day."})
+                    'text': f"{w['days']} days instead of the usual {u}: a count was missed, or an older, less frequent "
+                            "schedule. Usage is still right; left out of the normal per order day."})
             elif w['days'] < u:
                 w['flags'].append({'code': 'shorter_than_usual',
                     'text': f"{w['days']} days instead of the usual {u}: an extra count. "
                             "Usage is still right; left out of the normal per order day."})
+        ctx.setdefault('count_days', {})[pid] = days
 
         disp_f = base_factor(conv_map, p['display_unit_id'], p['base_unit_id'], pid)
         ctx['products'][pid] = {
@@ -337,9 +365,46 @@ def _load(args):
             'base_unit':       unit_names.get(p['base_unit_id']),
             'display_unit':    unit_names.get(p['display_unit_id']) if disp_f else unit_names.get(p['base_unit_id']),
             'display_factor':  disp_f or 1.0,          # 1 display unit = this many base units
+            # current count days (Mon first); None = no steady schedule found
+            'count_days':      [WEEKDAYS[d] for d in sorted(days)] if days is not None else None,
         }
         ctx['histories'][pid] = (history, usual)
     return ctx, None
+
+
+SCHEDULE_WEEKS = 3      # current count days: weekdays counted in at least 2 of the last 3 weeks
+
+
+def _count_days(plist):
+    """
+    A product's current count days (set of weekday numbers, Monday = 0): the
+    weekdays it was counted on in at least 2 of the last 3 weeks (weeks counted
+    back from its latest count). One missed or one extra count does not change
+    the schedule; a real change shows after a week. With less history: at
+    least half the weeks there are. None when nothing qualifies.
+    """
+    if not plist:
+        return None
+    last = _d(plist[-1]['count_date'])
+    seen = {}
+    weeks = set()
+    for c in plist:
+        age = (last - _d(c['count_date'])).days // 7
+        if age < SCHEDULE_WEEKS:
+            weeks.add(age)
+            seen.setdefault(_d(c['count_date']).weekday(), set()).add(age)
+    n = len(weeks)
+    need = 2 if n >= SCHEDULE_WEEKS else max(1, (n + 1) // 2)
+    days = {d for d, ws in seen.items() if len(ws) >= need}
+    return days or None
+
+
+def _gap_to_next(day, days):
+    """Days from count day `day` to the next count day (7 when it is the only one)."""
+    for k in range(1, 8):
+        if (day + k) % 7 in days:
+            return k
+    return 7
 
 
 def _covers(day, n_days):
@@ -425,7 +490,7 @@ def get_usage():
             'normal_by_order_day': normal_out,
             # Things to check (an unusual window length is not one: its usage is still right)
             'flag_count':      sum(1 for w in windows for f in w['flags']
-                                   if f['code'] not in ('longer_than_usual', 'shorter_than_usual')),
+                                   if f['code'] not in ('longer_than_usual', 'shorter_than_usual', 'joined')),
             'windows':         sorted(windows, key=lambda x: x['end_date'], reverse=True),
         })
 
@@ -464,7 +529,7 @@ def get_par_check():
     out = []
     for pid, (history, usual) in ctx['histories'].items():
         picked = _last_usual(history, date_to,
-                             keep=lambda w: w['end'] is not None and w['start'] is not None)
+                             keep=lambda w: not w['skipped_counts'] and w['end'] is not None and w['start'] is not None)
         days_out = []
         for day, ws in sorted(picked.items(), key=lambda kv: WEEKDAYS.index(kv[0])):
             lefts = [w['end'] for w in ws]
@@ -482,9 +547,13 @@ def get_par_check():
                 'windows':     len(ws),
             })
 
-        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to]
+        # Joined windows (an older, more frequent schedule) span several
+        # deliveries: their par / stocked to / left over say nothing about
+        # the current par, so Par Check lists real windows only.
+        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to and not w['skipped_counts']]
         out.append({
             **ctx['products'][pid],
+            'joined_hidden': sum(1 for w in history if date_from <= _d(w['end_date']) <= date_to and w['skipped_counts']),
             'by_order_day': days_out,
             'windows': [{
                 'start_date':  w['start_date'],
@@ -492,6 +561,7 @@ def get_par_check():
                 'covers_from': w['covers_from'],
                 'order_day':   w['order_day'],
                 'usual':       w['usual'],
+                'days':        w['days'],
                 'par':         w['par'],
                 'start':       w['start'],
                 'received_regular': w['received_regular'],

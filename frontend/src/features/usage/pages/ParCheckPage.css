@@ -14,9 +14,8 @@
 
 @media (max-width: 768px) {
   /* The window table here has different columns than the Usage Report's:
-     undo its hiding, then hide Order day, Start, Regular received */
+     undo its hiding, then hide Start and Regular received */
   .usage-windows.parcheck-windows th, .usage-windows.parcheck-windows td { display: table-cell; }
-  .usage-windows.parcheck-windows th:nth-child(2), .usage-windows.parcheck-windows td:nth-child(2),
-  .usage-windows.parcheck-windows th:nth-child(4), .usage-windows.parcheck-windows td:nth-child(4),
-  .usage-windows.parcheck-windows th:nth-child(5), .usage-windows.parcheck-windows td:nth-child(5) { display: none; }
+  .usage-windows.parcheck-windows th:nth-child(3), .usage-windows.parcheck-windows td:nth-child(3):not([colspan]),
+  .usage-windows.parcheck-windows th:nth-child(4), .usage-windows.parcheck-windows td:nth-child(4) { display: none; }
 }

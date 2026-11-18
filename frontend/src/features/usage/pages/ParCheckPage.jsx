@@ -7,15 +7,18 @@
 // (regular) and what was LEFT at the next count. A par that always leaves a
 // lot behind is more than that order day needs; one that runs out is tight.
 // Per order day: medians and the lowest left over of the last 4 usual
-// windows (windows with extra orders count; they are marked).
+// windows (windows with extra orders count; they are marked). Only real
+// windows on the current count days: windows joined from an older, more
+// frequent schedule span several deliveries and are left out. The click-down
+// groups windows by order day.
 // Filters / loading shared with the Usage Report: ../components/UsageFilters.jsx
 // Data: GET /api/usage/par-check (backend/features/usage/usage_routes.py)
 // =============================================================================
 import { useState, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory,
-  fmtCovers, SHORT_DAY, SOURCES,
+  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory, groupByOrderDay,
+  fmtCovers, fmtCountDays, SHORT_DAY, SOURCES,
 } from '../components/UsageFilters.jsx'
 import '../../../core/styles/shared-ui.css'
 import './UsagePage.css'
@@ -84,11 +87,13 @@ export default function ParCheckPage() {
                             <td rowSpan={days.length}>
                               <span className="usage-caret">{isOpen ? '▾' : '▸'}</span>
                               <span className="usage-product">{p.product_name}</span>
-                              <div className="usage-sub">{unitOf(p)} · {p.windows.length} window{p.windows.length === 1 ? '' : 's'}</div>
+                              <div className="usage-sub" title="Current count days: counted on these days in at least 2 of the last 3 weeks">
+                                {unitOf(p)} · counted {fmtCountDays(p.count_days)}
+                              </div>
                             </td>
                           )}
                           {d === null ? (
-                            <td colSpan={7} className="usage-sub">no usual windows yet</td>
+                            <td colSpan={7} className="usage-sub">no windows on the current count days yet</td>
                           ) : (
                             <>
                               <td>
@@ -138,7 +143,6 @@ function ParWindows({ p, qty, navigate }) {
       <thead>
         <tr>
           <th title="Counts are end of day: the Monday count to the Wednesday count covers Tue → Wed">Days covered</th>
-          <th>Order day</th>
           <th className="usage-num">Par</th>
           <th className="usage-num">Start</th>
           <th className="usage-num">+ Regular received</th>
@@ -148,29 +152,50 @@ function ParWindows({ p, qty, navigate }) {
         </tr>
       </thead>
       <tbody>
-        {p.windows.map(w => (
-          <tr key={w.start_date} className={w.usual ? '' : 'usage-off'}>
-            <td>
-              {fmtCovers(w)}
-              {!w.usual && <span className="usage-tag" title="A count was missed or added: not used for the order-day numbers">unusual</span>}
-              {w.extra > 0 && <span className="usage-tag" title="Extra orders came in this window">extra {qty(p, w.extra)}</span>}
-            </td>
-            <td>{SHORT_DAY[w.order_day]}</td>
-            <td className="usage-num">{qty(p, w.par)}</td>
-            <td className="usage-num">
-              <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>{qty(p, w.start)}</a>
-            </td>
-            <td className="usage-num">{w.received_regular ? qty(p, w.received_regular) : '—'}</td>
-            <td className={`usage-num ${w.par !== null && w.stocked_to < w.par ? 'usage-diff' : ''}`}
-              title={w.par !== null && w.stocked_to < w.par ? 'Stocked below par: the store ordered less than the par asked for' : undefined}>
-              {qty(p, w.stocked_to)}
-            </td>
-            <td className="usage-num">{qty(p, w.used)}</td>
-            <td className={`usage-num usage-strong ${w.left <= 0 ? 'usage-neg' : ''}`}>
-              <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>{qty(p, w.left)}</a>
+        {groupByOrderDay(p.windows).map(g => {
+          const d = p.by_order_day.find(x => x.order_day === g.day)
+          return (
+            <Fragment key={g.day}>
+              <tr className="usage-day-row">
+                <td colSpan={7}>
+                  {SHORT_DAY[g.day]} order
+                  {d && <> · covers {d.covers} · par <b>{qty(p, d.par)}</b> · lowest left <b>{qty(p, d.lowest_left)}</b></>}
+                  <span className="usage-day-n">{g.windows.length} window{g.windows.length === 1 ? '' : 's'}</span>
+                </td>
+              </tr>
+              {g.windows.map(w => (
+                <tr key={w.start_date} className={w.usual ? '' : 'usage-off'}>
+                  <td>
+                    {fmtCovers(w)}
+                    {!w.usual && <span className="usage-tag" title="Not the usual length for this order day (a missed or extra count): not used for the order-day numbers">unusual</span>}
+                    {w.extra > 0 && <span className="usage-tag" title="Extra orders came in this window">extra {qty(p, w.extra)}</span>}
+                  </td>
+                  <td className="usage-num">{qty(p, w.par)}</td>
+                  <td className="usage-num">
+                    <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>{qty(p, w.start)}</a>
+                  </td>
+                  <td className="usage-num">{w.received_regular ? qty(p, w.received_regular) : '—'}</td>
+                  <td className={`usage-num ${w.par !== null && w.stocked_to < w.par ? 'usage-diff' : ''}`}
+                    title={w.par !== null && w.stocked_to < w.par ? 'Stocked below par: the store ordered less than the par asked for' : undefined}>
+                    {qty(p, w.stocked_to)}
+                  </td>
+                  <td className="usage-num">{qty(p, w.used)}</td>
+                  <td className={`usage-num usage-strong ${w.left <= 0 ? 'usage-neg' : ''}`}>
+                    <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>{qty(p, w.left)}</a>
+                  </td>
+                </tr>
+              ))}
+            </Fragment>
+          )
+        })}
+        {p.joined_hidden > 0 && (
+          <tr className="usage-day-row usage-day-note">
+            <td colSpan={7}>
+              {p.joined_hidden} older window{p.joined_hidden === 1 ? '' : 's'} from a more frequent schedule not shown here:
+              joined windows span several deliveries, so they say nothing about the current par. The Usage Report shows them.
             </td>
           </tr>
-        ))}
+        )}
       </tbody>
     </table>
   )

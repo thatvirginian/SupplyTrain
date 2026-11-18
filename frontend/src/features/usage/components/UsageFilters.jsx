@@ -6,7 +6,8 @@
 //   <UsageFilterBar f />  store (admins), dates, search, category, which
 //                         counts make the windows, base units
 //   <PendingOrders />     orders shipped but not received (usage incomplete)
-//   fmtDay, SHORT_DAY, SOURCES, makeQty
+//   fmtDay, fmtCovers, SHORT_DAY, SOURCES, makeQty, groupByCategory,
+//   groupByOrderDay, fmtCountDays
 // =============================================================================
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import axios from 'axios'
@@ -45,6 +46,18 @@ export const makeQty = (inBase) => (p, v) => {
   const n = inBase ? v : v / (p.display_factor || 1)
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
+
+const WEEK_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+// A product's windows grouped by order day (Mon first), newest first inside each
+export const groupByOrderDay = (windows) => {
+  const by = {}
+  ;(windows || []).forEach(w => { (by[w.order_day] = by[w.order_day] || []).push(w) })
+  return WEEK_ORDER.filter(d => by[d]).map(d => ({ day: d, windows: by[d] }))
+}
+
+// "Mon · Wed · Fri" (the product's current count days)
+export const fmtCountDays = (days) => days ? days.map(d => SHORT_DAY[d]).join(' · ') : 'no steady count days'
 
 // Group products by category (the server sorts by category, then name)
 export const groupByCategory = (products) => {

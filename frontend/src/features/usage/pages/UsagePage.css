@@ -119,6 +119,19 @@
   text-transform: uppercase;
 }
 .usage-tag-warn { background: rgba(217,119,6,0.12); color: var(--warning); }
+.usage-tag-join { background: rgba(37,99,235,0.10); color: var(--info); }
+
+/* Click-down: one block per order day */
+.usage-windows tr.usage-day-row td {
+  background:     var(--bg-raised);
+  font-size:      0.7rem;
+  font-weight:    600;
+  color:          var(--text-secondary);
+  padding:        0.35rem 0.6rem;
+}
+.usage-windows tr.usage-day-row td b { font-family: var(--font-mono); color: var(--text-primary); }
+.usage-day-n { float: right; font-weight: 400; color: var(--text-muted); }
+.usage-windows tr.usage-day-note td { font-weight: 400; color: var(--text-muted); font-style: italic; }
 
 /* Where a window's number came from */
 .usage-sources-row > td { background: var(--bg-base); }
@@ -146,8 +159,8 @@
 @media (max-width: 768px) {
   .usage-date { width: 100%; }
   .usage-to   { display: none; }
-  /* Usage Report windows: hide Start, Ordered, End */
-  .usage-windows th:nth-child(2), .usage-windows td:nth-child(2),
+  /* Usage Report windows: hide Start, Ordered, End (not the order-day header rows) */
+  .usage-windows th:nth-child(2), .usage-windows td:nth-child(2):not([colspan]),
   .usage-windows th:nth-child(3), .usage-windows td:nth-child(3),
   .usage-windows th:nth-child(6), .usage-windows td:nth-child(6) { display: none; }
   .usage-sources li { grid-template-columns: 60px 1fr 70px; }
