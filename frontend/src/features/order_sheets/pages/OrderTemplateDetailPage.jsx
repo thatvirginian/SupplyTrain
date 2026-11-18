@@ -365,7 +365,7 @@ export default function OrderTemplateDetailPage() {
   // ── Location assignment (by count day) ─────────────────────────────────────
   // Each store has a row of day checkboxes. Any day checked = assigned on those
   // days; unchecking the last day unassigns the store. Saves on every click.
-  const [savingDays, setSavingDays] = useState(null)   // location_id being saved
+  const [savingDays, setSavingDays] = useState(() => new Set())   // stores with a save in flight
   const [daysError,  setDaysError]  = useState(null)
 
   const handleToggleDay = async (loc, day) => {
@@ -386,7 +386,7 @@ export default function OrderTemplateDetailPage() {
     })
 
     applyDays(days)
-    setSavingDays(loc.store_guid)
+    setSavingDays(prev => new Set(prev).add(loc.store_guid))
     setDaysError(null)
     try {
       await axios.put(`/api/sheet-templates/${id}/locations/${loc.store_guid}`, { days })
@@ -395,7 +395,7 @@ export default function OrderTemplateDetailPage() {
       applyDays(before)
       setDaysError(`Couldn't save ${loc.location_name}: ${e.response?.data?.error || 'try again'}`)
     } finally {
-      setSavingDays(null)
+      setSavingDays(prev => { const next = new Set(prev); next.delete(loc.store_guid); return next })
     }
   }
 
@@ -724,7 +724,7 @@ export default function OrderTemplateDetailPage() {
                               type="checkbox"
                               aria-label={`${loc.location_name} ${d.full}`}
                               checked={days.includes(d.day)}
-                              disabled={savingDays === loc.store_guid}
+                              disabled={savingDays.has(loc.store_guid)}
                               onChange={() => handleToggleDay(loc, d.day)}
                             />
                           </td>
