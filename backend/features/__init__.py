@@ -10,7 +10,7 @@
 #   purchase_orders  Order History / Order Detail: accept, ship, receive, fulfill,
 #                    plus Unscheduled Orders (catering etc., placed by hand, no inventory)
 #   transfers        Store-to-store transfers (open -> sent -> received)
-#   usage            Actual usage per store, count to count (regular = actual - extra orders)
+#   usage            Usage Report (count to count, regular = actual - extra orders) + Par Check
 #   commissary       Comm Templates (and the commissary side of ordering)
 #   inventory        Inv Templates (admin) and Inventories (staff)
 #

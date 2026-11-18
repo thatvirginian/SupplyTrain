@@ -1,4 +1,4 @@
-/* UsagePage: usage per product, count to count */
+/* Usage section (Usage Report, Par Check): usage per product, count to count */
 
 .usage-empty {
   padding:    2rem;
@@ -58,6 +58,8 @@
 .usage-strong { font-weight: 600; }
 .usage-extra  { color: var(--text-muted); }
 .usage-neg    { color: var(--error); }
+.usage-muted  { color: var(--text-muted); }
+.usage-diff   { color: var(--warning); }
 
 .usage-chip {
   display:       inline-block;
@@ -144,8 +146,10 @@
 @media (max-width: 768px) {
   .usage-date { width: 100%; }
   .usage-to   { display: none; }
+  /* Usage Report windows: hide Start, Ordered, End */
   .usage-windows th:nth-child(2), .usage-windows td:nth-child(2),
-  .usage-windows th:nth-child(5), .usage-windows td:nth-child(5) { display: none; }
+  .usage-windows th:nth-child(3), .usage-windows td:nth-child(3),
+  .usage-windows th:nth-child(6), .usage-windows td:nth-child(6) { display: none; }
   .usage-sources li { grid-template-columns: 60px 1fr 70px; }
   .usage-src-as { display: none; }
 }

@@ -46,8 +46,22 @@
 # own base unit to the product's current base unit with today's conversions;
 # anything that cannot be converted is left out and flagged, never guessed.
 #
+# ORDERED (per window) = what the store asked for on the orders delivered in
+# the window (regular and extra; the store's number before any commissary
+# change, returned lines included). Not part of the math: received is.
+#
+# PAR CHECK (/api/usage/par-check) reads the same windows from the other side:
+# the par the order was made with (snapshot on the start count's order sheet),
+# what the store stocked up to (start count + regular orders received), what
+# it used (regular) and what was LEFT at the next count. A par that always
+# leaves a lot behind is higher than the order day needs. Per order day:
+# medians and the LOWEST left over of the last 4 usual windows. Windows with
+# extra orders are NOT left out (caterings are too frequent to split windows
+# by; stores use close to what is sent for a catering); they are marked.
+#
 # Endpoints in this file:
-#   GET  /api/usage   get_usage
+#   GET  /api/usage             get_usage
+#   GET  /api/usage/par-check   get_par_check
 # =============================================================================
 
 from datetime import date, timedelta
@@ -88,40 +102,45 @@ def _f(v):
     return float(v) if v is not None else None
 
 
-@bp.route('/usage', methods=['GET'])
-@manage_required
-def get_usage():
-    """
-    Query params:
-        location_id   admin only (managers see their own store)
-        date_from     YYYY-MM-DD  windows ENDING on or after this day (default 28 days ago)
-        date_to       YYYY-MM-DD  windows ending on or before this day (default today)
-        search        product name contains
-        category_id   optional
-        source        oh (order sheets, default) | inv (inventories) | all
-    """
+def _read_args():
+    """Shared query params. Returns (args, None) or (None, error response)."""
     try:
         date_to   = date.fromisoformat(request.args.get('date_to') or date.today().isoformat())
         date_from = date.fromisoformat(request.args.get('date_from') or (date_to - timedelta(days=28)).isoformat())
     except ValueError:
-        return jsonify({'error': 'Dates must be YYYY-MM-DD'}), 400
+        return None, (jsonify({'error': 'Dates must be YYYY-MM-DD'}), 400)
     if date_from > date_to:
-        return jsonify({'error': 'From date is after To date'}), 400
-    search      = (request.args.get('search') or '').strip()
-    category_id = request.args.get('category_id', type=int)
-    source      = request.args.get('source', 'oh')
+        return None, (jsonify({'error': 'From date is after To date'}), 400)
+    source = request.args.get('source', 'oh')
     if source not in ('oh', 'inv', 'all'):
-        return jsonify({'error': 'source must be oh, inv or all'}), 400
+        return None, (jsonify({'error': 'source must be oh, inv or all'}), 400)
+    return {
+        'date_from':   date_from,
+        'date_to':     date_to,
+        'search':      (request.args.get('search') or '').strip(),
+        'category_id': request.args.get('category_id', type=int),
+        'source':      source,
+    }, None
+
+
+def _load(args):
+    """
+    Everything both reports need: the location, every product's windows over
+    the range plus LOOKBACK_DAYS of history (usual lengths and normal usage
+    need it). Returns (ctx, None) or (None, error response).
+    """
+    date_from, date_to, source = args['date_from'], args['date_to'], args['source']
+    search, category_id = args['search'], args['category_id']
 
     with get_engine().connect() as conn:
         if _is_admin():
             location_id = request.args.get('location_id')
             if not location_id:
-                return jsonify({'error': 'Choose a location'}), 400
+                return None, (jsonify({'error': 'Choose a location'}), 400)
         else:
             location_id = _get_user_location(conn)
             if not location_id:
-                return jsonify({'error': 'No location is linked to your account'}), 403
+                return None, (jsonify({'error': 'No location is linked to your account'}), 403)
         location_id = str(location_id)
 
         location = conn.execute(text("""
@@ -129,12 +148,15 @@ def get_usage():
             FROM locations WHERE store_guid::text = :loc
         """), {'loc': location_id}).mappings().fetchone()
         if not location:
-            return jsonify({'error': 'Location not found'}), 404
+            return None, (jsonify({'error': 'Location not found'}), 404)
 
         look_from = date_from - timedelta(days=LOOKBACK_DAYS)
         params = {'loc': location_id, 'look_from': look_from, 'to': date_to, 'tz': STORE_TZ}
+        ctx = {'location': location, 'args': args, 'products': {}, 'histories': {}}
 
         # ── Products + their counts ─────────────────────────────────────────
+        # Each count carries the par its order sheet was made with (order
+        # sheet inventories only; NULL for a standalone inventory).
         pfilters = []
         if search:
             pfilters.append('p.name ILIKE :search')
@@ -147,9 +169,13 @@ def get_usage():
         if source == 'all':
             counts = conn.execute(text(f"""
                 SELECT ic.product_id, ic.count_date, ic.base_quantity, ic.base_unit_id,
-                       ic.inventory_submission_id
+                       ic.inventory_submission_id,
+                       isc.par_qty, isc.par_unit_id, isc.par_base_qty, isc.base_unit_id AS par_base_unit_id
                 FROM inventory_counts ic
                 JOIN products p ON p.id = ic.product_id
+                LEFT JOIN inventory_submission_counts isc
+                       ON isc.inventory_submission_id = ic.inventory_submission_id
+                      AND isc.product_id = ic.product_id
                 WHERE ic.location_id = :loc
                   AND ic.count_date BETWEEN CAST(:look_from AS date) AND CAST(:to AS date)
                   AND ic.base_quantity IS NOT NULL
@@ -162,7 +188,8 @@ def get_usage():
             counts = conn.execute(text(f"""
                 SELECT DISTINCT ON (isc.product_id, ivs.count_date)
                        isc.product_id, ivs.count_date, isc.base_quantity, isc.base_unit_id,
-                       ivs.id AS inventory_submission_id
+                       ivs.id AS inventory_submission_id,
+                       isc.par_qty, isc.par_unit_id, isc.par_base_qty, isc.base_unit_id AS par_base_unit_id
                 FROM inventory_submission_counts isc
                 JOIN inventory_submissions ivs ON ivs.id = isc.inventory_submission_id
                 JOIN products p ON p.id = isc.product_id
@@ -178,7 +205,7 @@ def get_usage():
 
         product_ids = sorted({r['product_id'] for r in counts})
         if not product_ids:
-            return jsonify(_empty(location, date_from, date_to, source))
+            return ctx, None
         params['pids'] = product_ids
 
         products = {r['id']: dict(r) for r in conn.execute(text("""
@@ -195,8 +222,12 @@ def get_usage():
         """), params).mappings().all()}
 
         # ── Movements (from the earliest possible window start) ─────────────
+        # asked = the store's number (original_quantity when the commissary
+        # changed the line, else the line quantity), in the order unit.
         receipts = conn.execute(text("""
             SELECT poi.product_id, poi.base_quantity, poi.base_unit_id, poi.received_status,
+                   COALESCE(poi.original_quantity, poi.order_quantity) AS asked_quantity,
+                   poi.order_unit_id,
                    po.id AS order_id, po.order_type, po.reason, po.reference,
                    v.name AS vendor_name,
                    (COALESCE(po.received_at, poi.received_at) AT TIME ZONE :tz)::date AS received_day,
@@ -231,7 +262,7 @@ def get_usage():
         """), params).mappings().all()
 
         # Orders delivered (shipped) but not yet received: usage is incomplete
-        pending = conn.execute(text("""
+        ctx['pending'] = conn.execute(text("""
             SELECT po.id, po.expected_date, v.name AS vendor_name
             FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id
             WHERE po.location_id = :loc AND po.status = 'shipped'
@@ -241,7 +272,10 @@ def get_usage():
 
         # Conversions: every unit any stored amount is in -> product base units
         unit_ids = {r['base_unit_id'] for r in counts} \
+                 | {r['par_unit_id'] for r in counts} \
+                 | {r['par_base_unit_id'] for r in counts} \
                  | {r['base_unit_id'] for r in receipts} \
+                 | {r['order_unit_id'] for r in receipts} \
                  | {u for r in transfers for u in (r['base_unit_id'], r['received_base_unit_id'])} \
                  | {p['display_unit_id'] for p in products.values()}
         unit_ids.discard(None)
@@ -268,12 +302,9 @@ def get_usage():
     for r in transfers:
         tr_by_pid.setdefault(r['product_id'], []).append(r)
 
-    out = []
     for pid, plist in by_pid.items():
         p = products[pid]
-        # Every window in the fetched history (lookback included): the usual
-        # length per order day and the normal usage need history; only the
-        # windows ending in the range are listed.
+        # Every window in the fetched history (lookback included)
         history = [_window(pid, a, b, _d(a['count_date']), _d(b['count_date']),
                            rec_by_pid.get(pid, []), tr_by_pid.get(pid, []), to_base)
                    for a, b in zip(plist, plist[1:])]
@@ -297,31 +328,8 @@ def get_usage():
                     'text': f"{w['days']} days instead of the usual {u}: an extra count. "
                             "Usage is still right; left out of the normal per order day."})
 
-        # Normal usage per order day: median regular of the last 4 usual windows
-        normal = {}
-        for w in sorted(history, key=lambda x: x['start_date'], reverse=True):
-            if not w['usual'] or w['regular'] is None or _d(w['end_date']) > date_to:
-                continue
-            normal.setdefault(w['order_day'], [])
-            if len(normal[w['order_day']]) < 4:
-                normal[w['order_day']].append(w['regular'])
-        normal_out = []
-        for day, vals in sorted(normal.items(), key=lambda kv: WEEKDAYS.index(kv[0])):
-            u = usual[day]
-            first = WEEKDAYS[(WEEKDAYS.index(day) + 1) % 7]
-            last  = WEEKDAYS[(WEEKDAYS.index(day) + u) % 7]
-            normal_out.append({
-                'order_day':      day,
-                'covers':         first[:3] if u == 1 else f'{first[:3]}–{last[:3]}',
-                'days':           u,
-                'median_regular': round(median(vals), 4),
-                'windows':        len(vals),
-            })
-
-        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to]
         disp_f = base_factor(conv_map, p['display_unit_id'], p['base_unit_id'], pid)
-        tot = lambda k: round(sum(w[k] for w in windows if w[k] is not None), 4)
-        out.append({
+        ctx['products'][pid] = {
             'product_id':      pid,
             'product_name':    p['name'],
             'category_id':     p['category_id'],
@@ -329,7 +337,87 @@ def get_usage():
             'base_unit':       unit_names.get(p['base_unit_id']),
             'display_unit':    unit_names.get(p['display_unit_id']) if disp_f else unit_names.get(p['base_unit_id']),
             'display_factor':  disp_f or 1.0,          # 1 display unit = this many base units
+        }
+        ctx['histories'][pid] = (history, usual)
+    return ctx, None
+
+
+def _covers(day, n_days):
+    """Monday order covering 2 days -> 'Tue–Wed'"""
+    first = WEEKDAYS[(WEEKDAYS.index(day) + 1) % 7]
+    last  = WEEKDAYS[(WEEKDAYS.index(day) + n_days) % 7]
+    return first[:3] if n_days == 1 else f'{first[:3]}–{last[:3]}'
+
+
+def _last_usual(history, date_to, keep=None, n=4):
+    """Per order day: the last n usual windows ending by date_to (newest first) that pass keep()."""
+    picked = {}
+    for w in sorted(history, key=lambda x: x['start_date'], reverse=True):
+        if not w['usual'] or _d(w['end_date']) > date_to or (keep and not keep(w)):
+            continue
+        lst = picked.setdefault(w['order_day'], [])
+        if len(lst) < n:
+            lst.append(w)
+    return picked
+
+
+def _base_response(ctx):
+    a = ctx['args']
+    loc = ctx['location']
+    return {
+        'location_id':    loc['location_id'],
+        'location_name':  loc['location_name'],
+        'date_from':      a['date_from'].isoformat(),
+        'date_to':        a['date_to'].isoformat(),
+        'timezone':       STORE_TZ,
+        'source':         a['source'],
+        'pending_orders': [{'id': r['id'], 'vendor_name': r['vendor_name'],
+                            'expected_date': str(r['expected_date'])[:10] if r['expected_date'] else None}
+                           for r in ctx.get('pending', [])],
+        'products':       [],
+    }
+
+
+@bp.route('/usage', methods=['GET'])
+@manage_required
+def get_usage():
+    """
+    Query params:
+        location_id   admin only (managers see their own store)
+        date_from     YYYY-MM-DD  windows ENDING on or after this day (default 28 days ago)
+        date_to       YYYY-MM-DD  windows ending on or before this day (default today)
+        search        product name contains
+        category_id   optional
+        source        oh (order sheets, default) | inv (inventories) | all
+    """
+    args, err = _read_args()
+    if err:
+        return err
+    ctx, err = _load(args)
+    if err:
+        return err
+    date_from, date_to = args['date_from'], args['date_to']
+
+    out = []
+    for pid, (history, usual) in ctx['histories'].items():
+        # Normal usage per order day: median regular of the last 4 usual windows
+        normal_out = []
+        picked = _last_usual(history, date_to, keep=lambda w: w['regular'] is not None)
+        for day, ws in sorted(picked.items(), key=lambda kv: WEEKDAYS.index(kv[0])):
+            normal_out.append({
+                'order_day':      day,
+                'covers':         _covers(day, usual[day]),
+                'days':           usual[day],
+                'median_regular': round(median(w['regular'] for w in ws), 4),
+                'windows':        len(ws),
+            })
+
+        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to]
+        tot = lambda k: round(sum(w[k] for w in windows if w[k] is not None), 4)
+        out.append({
+            **ctx['products'][pid],
             'totals': {
+                'ordered': tot('ordered'),
                 'actual':  tot('actual'),
                 'extra':   tot('extra'),
                 'regular': tot('regular'),
@@ -342,18 +430,84 @@ def get_usage():
         })
 
     out.sort(key=lambda x: ((x['category'] or '~'), x['product_name']))
-    return jsonify({
-        'location_id':    location['location_id'],
-        'location_name':  location['location_name'],
-        'date_from':      date_from.isoformat(),
-        'date_to':        date_to.isoformat(),
-        'timezone':       STORE_TZ,
-        'source':         source,
-        'pending_orders': [{'id': r['id'], 'vendor_name': r['vendor_name'],
-                            'expected_date': str(r['expected_date'])[:10] if r['expected_date'] else None}
-                           for r in pending],
-        'products':       out,
-    })
+    resp = _base_response(ctx)
+    resp['products'] = out
+    return jsonify(resp)
+
+
+@bp.route('/usage/par-check', methods=['GET'])
+@manage_required
+def get_par_check():
+    """
+    Same query params as /usage. Per product and order day (last 4 usual
+    windows ending by date_to; windows with extra orders included, marked):
+        par              the par on the latest of those windows' order sheets
+        stocked_to       median of start count + regular orders received
+        used             median regular usage
+        left             median left at the next count
+        lowest_left      the least that was left (how close it came to running out)
+        ran_out          windows that ended at 0
+    plus every window in the range with the same numbers.
+    """
+    args, err = _read_args()
+    if err:
+        return err
+    ctx, err = _load(args)
+    if err:
+        return err
+    date_from, date_to = args['date_from'], args['date_to']
+
+    def med(vals):
+        vals = [v for v in vals if v is not None]
+        return round(median(vals), 4) if vals else None
+
+    out = []
+    for pid, (history, usual) in ctx['histories'].items():
+        picked = _last_usual(history, date_to,
+                             keep=lambda w: w['end'] is not None and w['start'] is not None)
+        days_out = []
+        for day, ws in sorted(picked.items(), key=lambda kv: WEEKDAYS.index(kv[0])):
+            lefts = [w['end'] for w in ws]
+            days_out.append({
+                'order_day':   day,
+                'covers':      _covers(day, usual[day]),
+                'days':        usual[day],
+                'par':         next((w['par'] for w in ws if w['par'] is not None), None),
+                'stocked_to':  med(w['stocked_to'] for w in ws),
+                'used':        med(w['regular'] for w in ws),
+                'left':        med(lefts),
+                'lowest_left': round(min(lefts), 4),
+                'ran_out':     sum(1 for v in lefts if v <= 0),
+                'with_extra':  sum(1 for w in ws if w['extra']),
+                'windows':     len(ws),
+            })
+
+        windows = [w for w in history if date_from <= _d(w['end_date']) <= date_to]
+        out.append({
+            **ctx['products'][pid],
+            'by_order_day': days_out,
+            'windows': [{
+                'start_date':  w['start_date'],
+                'end_date':    w['end_date'],
+                'covers_from': w['covers_from'],
+                'order_day':   w['order_day'],
+                'usual':       w['usual'],
+                'par':         w['par'],
+                'start':       w['start'],
+                'received_regular': w['received_regular'],
+                'stocked_to':  w['stocked_to'],
+                'used':        w['regular'],
+                'left':        w['end'],
+                'extra':       w['extra'],
+                'start_inventory_id': w['start_inventory_id'],
+                'end_inventory_id':   w['end_inventory_id'],
+            } for w in sorted(windows, key=lambda x: x['end_date'], reverse=True)],
+        })
+
+    out.sort(key=lambda x: ((x['category'] or '~'), x['product_name']))
+    resp = _base_response(ctx)
+    resp['products'] = out
+    return jsonify(resp)
 
 
 def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
@@ -369,7 +523,7 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
         flags.append({'code': 'count_unconverted',
                       'text': "A count is in a unit that no longer converts to the product's base unit"})
 
-    received = extra = t_in = t_out = 0.0
+    received = received_regular = extra = t_in = t_out = ordered = 0.0
     for r in receipts:
         rday = _d(r['received_day'])
         qty  = 0.0 if r['received_status'] == 'returned' else to_base(r['base_quantity'], r['base_unit_id'], pid)
@@ -389,6 +543,10 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
             label += f" · extra ({r['reason'] or 'other'})" + (f" · {r['reference']}" if r['reference'] else '')
         if in_recv:
             received += qty
+            if not is_extra:
+                received_regular += qty
+            asked = to_base(r['asked_quantity'], r['order_unit_id'], pid)
+            ordered += asked if asked is not None else qty
             sources.append({'type': 'order', 'id': r['order_id'], 'date': rday.isoformat(),
                             'label': label + (' · returned' if r['received_status'] == 'returned' else ''),
                             'base_quantity': round(qty, 4), 'counts_as': 'received'})
@@ -417,6 +575,13 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
                         'label': f"Transfer {'from' if t['direction'] == 'in' else 'to'} {t['other_location']}",
                         'base_quantity': round(qty, 4), 'counts_as': f"transfer_{t['direction']}"})
 
+    # The par this window's order was made with (start count's order sheet).
+    # Converted from par_qty + par unit with today's conversions; else the
+    # stored base snapshot.
+    par = to_base(a.get('par_qty'), a.get('par_unit_id'), pid)
+    if par is None:
+        par = to_base(a.get('par_base_qty'), a.get('par_base_unit_id'), pid)
+
     actual = regular = None
     if start is not None and end is not None:
         actual  = round(start + received + t_in - t_out - end, 4)
@@ -437,7 +602,11 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
         'days':          (end_day - start_day).days,
         'start':         round(start, 4) if start is not None else None,
         'start_inventory_id': a['inventory_submission_id'],
+        'ordered':       round(ordered, 4),
         'received':      round(received, 4),
+        'received_regular': round(received_regular, 4),
+        'par':           round(par, 4) if par is not None else None,
+        'stocked_to':    round(start + received_regular, 4) if start is not None else None,
         'transfers_in':  round(t_in, 4),
         'transfers_out': round(t_out, 4),
         'end':           round(end, 4) if end is not None else None,
@@ -447,17 +616,4 @@ def _window(pid, a, b, start_day, end_day, receipts, transfers, to_base):
         'regular':       regular,
         'flags':         flags,
         'sources':       sorted(sources, key=lambda s: s['date']),
-    }
-
-
-def _empty(location, date_from, date_to, source):
-    return {
-        'location_id':      location['location_id'],
-        'location_name':    location['location_name'],
-        'date_from':        date_from.isoformat(),
-        'date_to':          date_to.isoformat(),
-        'timezone':         STORE_TZ,
-        'source':           source,
-        'pending_orders':   [],
-        'products':         [],
     }

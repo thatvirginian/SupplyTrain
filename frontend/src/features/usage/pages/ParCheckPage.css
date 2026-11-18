@@ -1,0 +1,22 @@
+/* ParCheckPage: one row per order day under each product (shares UsagePage.css) */
+
+.parcheck-table tr.parcheck-inner td { border-bottom-color: var(--border-light); }
+.parcheck-table td { vertical-align: middle; }
+.parcheck-table td[rowspan] { vertical-align: top; border-bottom: 1px solid var(--border); }
+
+.parcheck-pct {
+  display:     block;
+  font-family: system-ui, sans-serif;
+  font-size:   0.62rem;
+  font-weight: 400;
+  color:       var(--text-muted);
+}
+
+@media (max-width: 768px) {
+  /* The window table here has different columns than the Usage Report's:
+     undo its hiding, then hide Order day, Start, Regular received */
+  .usage-windows.parcheck-windows th, .usage-windows.parcheck-windows td { display: table-cell; }
+  .usage-windows.parcheck-windows th:nth-child(2), .usage-windows.parcheck-windows td:nth-child(2),
+  .usage-windows.parcheck-windows th:nth-child(4), .usage-windows.parcheck-windows td:nth-child(4),
+  .usage-windows.parcheck-windows th:nth-child(5), .usage-windows.parcheck-windows td:nth-child(5) { display: none; }
+}

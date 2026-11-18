@@ -3,10 +3,12 @@ import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.js'
 import './Layout.css'
 
-function NavItem({ to, label, icon, collapsed }) {
+// end: only highlight on this exact URL (not on pages under it, e.g. /usage vs /usage/par-check)
+function NavItem({ to, label, icon, collapsed, end = false }) {
   return (
     <NavLink
       to={to}
+      end={end}
       className={({ isActive }) => `nav-item ${isActive ? 'nav-item--active' : ''}`}
       title={collapsed ? label : undefined}
     >
@@ -70,9 +72,12 @@ export default function Layout() {
           <NavItem to="/transfers"      label="Transfers"      icon="⇆" collapsed={collapsed} />
           <NavItem to="/inventory"      label="Inventories"    icon="⧉" collapsed={collapsed} />
           <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
-          {isManager && (
-            <NavItem to="/usage"         label="Usage"          icon="∿" collapsed={collapsed} />
-          )}
+
+          {isManager && <>
+            {!collapsed && <div className="nav-section-label">Usage</div>}
+            <NavItem to="/usage"           label="Usage Report"   icon="∿" collapsed={collapsed} end />
+            <NavItem to="/usage/par-check" label="Par Check"      icon="⊿" collapsed={collapsed} />
+          </>}
         </nav>
 
         <div className="sidebar-footer">

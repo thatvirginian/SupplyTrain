@@ -29,6 +29,7 @@ import TransferListPage            from './features/transfers/pages/TransferList
 import TransferNewPage             from './features/transfers/pages/TransferNewPage.jsx'
 import TransferDetailPage          from './features/transfers/pages/TransferDetailPage.jsx'
 import UsagePage                   from './features/usage/pages/UsagePage.jsx'
+import ParCheckPage                from './features/usage/pages/ParCheckPage.jsx'
 
 function App() {
   const [user, setUser]     = useState(null)
@@ -149,6 +150,7 @@ function App() {
             {/* Usage: managers (admin, gm, commissary gm) */}
             {isManager && <>
               <Route path="usage"                    element={<UsagePage />} />
+              <Route path="usage/par-check"          element={<ParCheckPage />} />
             </>}
 
             {/* 404 */}
