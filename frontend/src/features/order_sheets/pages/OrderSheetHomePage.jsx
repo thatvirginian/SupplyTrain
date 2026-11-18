@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { formatDate, formatDateShort } from '../../../core/utils/dateUtils.js'
+import { formatDate, formatDateShort, todayLocal, parseLocalDate } from '../../../core/utils/dateUtils.js'
 import axios from 'axios'
 import { useAuth } from '../../../core/auth/AuthContext.js'
 import '../../../core/styles/shared-ui.css'
@@ -17,7 +17,7 @@ export default function OrderSheetHomePage() {
   const [error,       setError]       = useState(null)
   const [opening,     setOpening]     = useState(null)
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = todayLocal()
   const [countDate,   setCountDate]   = useState(today)
   const [locationId,  setLocationId]  = useState('')
 
@@ -49,14 +49,15 @@ export default function OrderSheetHomePage() {
       return
     }
     try {
-      const params = {}
+      // Only the sheets this store counts on the count date's weekday
+      const params = { count_date: countDate }
       if (locationId) params.location_id = locationId
       const res = await axios.get('/api/sheet-templates', { params })
       setTemplates(res.data)
     } catch (e) {
       console.error('Failed to load templates', e)
     }
-  }, [locationId, isAdmin])
+  }, [locationId, isAdmin, countDate])
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTemplates() }, [fetchTemplates])
@@ -142,7 +143,9 @@ export default function OrderSheetHomePage() {
         </div>
       ) : templates.length === 0 ? (
         <div className="card" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-          No count sheets available for this location.
+          No count sheets scheduled for {countDate
+            ? parseLocalDate(countDate).toLocaleDateString('en-US', { weekday: 'long' })
+            : 'this day'} at this location.
         </div>
       ) : (
         <div className="inv-template-list">

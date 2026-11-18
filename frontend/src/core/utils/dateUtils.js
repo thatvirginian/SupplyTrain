@@ -14,6 +14,15 @@ export function parseLocalDate(dateStr) {
 }
 
 /**
+ * Today's date in the browser's local time zone, as YYYY-MM-DD.
+ * (new Date().toISOString() is UTC: after about 7pm Eastern it gives tomorrow.)
+ */
+export function todayLocal() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
  * Format a DATE string for display — weekday, month, day, year.
  * e.g. "Wednesday, July 1, 2026"
  */

@@ -13,6 +13,7 @@
 #   PUT     /api/sheet-templates/<int:template_id>                          update_sheet_template
 #   POST    /api/sheet-templates/<int:template_id>/locations                assign_template_location
 #   DELETE  /api/sheet-templates/<int:template_id>/locations/<location_id>  unassign_template_location
+#   PUT     /api/sheet-templates/<int:template_id>/locations/<location_id>  set_template_location_days
 #   POST    /api/sheet-sections                                             create_sheet_section
 #   PUT     /api/sheet-sections/<int:section_id>                            update_sheet_section
 #   DELETE  /api/sheet-sections/<int:section_id>                            delete_sheet_section
@@ -31,6 +32,28 @@ from core.auth import (
 )
 from core.database import get_engine
 from core.units import has_base_conversion
+from datetime import date
+
+ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]   # 0 = Sunday ... 6 = Saturday (same as product_par_levels.day_of_week)
+
+
+def _weekday_of(count_date):
+    """0 = Sunday ... 6 = Saturday for a 'YYYY-MM-DD' string, or None if missing / not a date."""
+    if not count_date:
+        return None
+    try:
+        return (date.fromisoformat(str(count_date)[:10]).weekday() + 1) % 7
+    except ValueError:
+        return None
+
+
+def _days_list(value):
+    """sheet_template_locations.days as a list of ints (drivers hand arrays back as a list or as '{1,3,5}')."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [v for v in value.strip('{}').split(',') if v.strip()]
+    return sorted(int(v) for v in value)
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +66,14 @@ def list_sheet_templates():
     """
     List sheet templates.
     Admin sees all. Staff sees only templates assigned to their location.
+    With ?count_date=YYYY-MM-DD (and a location), only the templates the store
+    counts on that weekday (sheet_template_locations.days).
     """
     roles        = g.user.get('roles', [])
     is_admin     = 'admin' in roles
     location_id  = request.args.get('location_id')
     show_inactive = request.args.get('show_inactive', 'false').lower() == 'true'
+    dow           = _weekday_of(request.args.get('count_date'))
     active_filter = '' if (is_admin and show_inactive) else 'WHERE st.active = TRUE'
 
     with get_engine().connect() as conn:
@@ -74,17 +100,23 @@ def list_sheet_templates():
                 SELECT
                     st.id, st.name, st.notes, st.active,
                     st.created_by, st.created_at,
+                    stl.days,
                     COUNT(DISTINCT ss.id) AS section_count
                 FROM sheet_templates st
                 JOIN sheet_template_locations stl ON stl.template_id = st.id
                 LEFT JOIN sheet_sections ss        ON ss.template_id  = st.id
                 WHERE st.active = TRUE
                 AND stl.location_id = :location_id
-                GROUP BY st.id
+                AND (CAST(:dow AS smallint) IS NULL OR CAST(:dow AS smallint) = ANY(stl.days))
+                GROUP BY st.id, stl.days
                 ORDER BY st.name
-            """), {'location_id': location_id}).mappings().all()
+            """), {'location_id': location_id, 'dow': dow}).mappings().all()
 
-    return jsonify([dict(r) for r in rows])
+    result = [dict(r) for r in rows]
+    for r in result:
+        if 'days' in r:
+            r['days'] = _days_list(r['days'])
+    return jsonify(result)
 
 
 @bp.route('/sheet-templates', methods=['POST'])
@@ -196,7 +228,7 @@ def get_sheet_template(template_id):
 
         # Assigned locations
         locations = conn.execute(text("""
-            SELECT stl.location_id, l.location_name
+            SELECT stl.location_id, l.location_name, stl.days
             FROM sheet_template_locations stl
             JOIN locations l ON l.store_guid::text = stl.location_id
             WHERE stl.template_id = :id
@@ -230,7 +262,7 @@ def get_sheet_template(template_id):
 
     result = dict(template)
     result['sections']  = [dict(s) for s in sections]
-    result['locations'] = [dict(l) for l in locations]
+    result['locations'] = [{**dict(l), 'days': _days_list(l['days'])} for l in locations]
 
     # Merge count units into section items
     for section in result['sections']:
@@ -321,8 +353,8 @@ def duplicate_sheet_template(template_id):
 
             # Copy location assignments
             conn.execute(text("""
-                INSERT INTO sheet_template_locations (template_id, location_id)
-                SELECT :new_id, location_id FROM sheet_template_locations
+                INSERT INTO sheet_template_locations (template_id, location_id, days)
+                SELECT :new_id, location_id, days FROM sheet_template_locations
                 WHERE template_id = :old_id
             """), {'new_id': new_tmpl, 'old_id': template_id})
 
@@ -421,6 +453,53 @@ def unassign_template_location(template_id, location_id):
         return jsonify({'status': 'ok'})
     except Exception as e:
         logger.error(f'unassign_template_location: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/sheet-templates/<int:template_id>/locations/<location_id>', methods=['PUT'])
+@admin_required
+def set_template_location_days(template_id, location_id):
+    """
+    Set the days a store counts this template: {"days": [0..6]} (0 = Sunday).
+    Any day checked = assigned on those days. No days = not assigned (row removed).
+    """
+    data = request.get_json(force=True) or {}
+    days = data.get('days')
+    if not isinstance(days, list):
+        return jsonify({'error': 'days must be a list of weekdays (0 = Sunday ... 6 = Saturday)'}), 400
+    try:
+        days = sorted({int(d) for d in days})
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days must be whole numbers 0-6'}), 400
+    if any(d not in ALL_DAYS for d in days):
+        return jsonify({'error': 'days must be whole numbers 0-6 (0 = Sunday)'}), 400
+
+    try:
+        with get_engine().begin() as conn:
+            exists = conn.execute(text("SELECT 1 FROM sheet_templates WHERE id = :id"),
+                                  {'id': template_id}).fetchone()
+            if not exists:
+                return jsonify({'error': 'Template not found'}), 404
+            if not days:
+                conn.execute(text("""
+                    DELETE FROM sheet_template_locations
+                    WHERE template_id = :template_id AND location_id = :location_id
+                """), {'template_id': template_id, 'location_id': location_id})
+            else:
+                known = conn.execute(text(
+                    "SELECT 1 FROM locations WHERE store_guid::text = :location_id"),
+                    {'location_id': location_id}).fetchone()
+                if not known:
+                    return jsonify({'error': 'Unknown location'}), 400
+                conn.execute(text("""
+                    INSERT INTO sheet_template_locations (template_id, location_id, days)
+                    VALUES (:template_id, :location_id, CAST(:days AS smallint[]))
+                    ON CONFLICT (template_id, location_id) DO UPDATE SET days = EXCLUDED.days
+                """), {'template_id': template_id, 'location_id': location_id,
+                       'days': '{' + ','.join(str(d) for d in days) + '}'})
+        return jsonify({'location_id': location_id, 'days': days, 'assigned': bool(days)})
+    except Exception as e:
+        logger.error(f'set_template_location_days: {e}')
         return jsonify({'error': str(e)}), 500
 
 

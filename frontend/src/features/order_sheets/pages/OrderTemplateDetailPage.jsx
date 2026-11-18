@@ -8,6 +8,17 @@ import '../../../core/styles/drag-and-drop.css'
 import '../../catalog/pages/ProductDetailPage.css'   // uses classes defined in this stylesheet
 import '../../catalog/pages/VendorItemsPage.css'   // uses classes defined in this stylesheet
 
+// Count days for the Locations grid. 0 = Sunday, same as product_par_levels.day_of_week.
+const DAY_LABELS = [
+  { day: 0, short: 'Su', full: 'Sunday' },
+  { day: 1, short: 'Mo', full: 'Monday' },
+  { day: 2, short: 'Tu', full: 'Tuesday' },
+  { day: 3, short: 'We', full: 'Wednesday' },
+  { day: 4, short: 'Th', full: 'Thursday' },
+  { day: 5, short: 'Fr', full: 'Friday' },
+  { day: 6, short: 'Sa', full: 'Saturday' },
+]
+
 // ── Inline add button + search ─────────────────────────────────────────────
 function InlineAddButton({ sectionId, insertAfterIdx, addingTo, setAddingTo, onAdd }) {
   const [search,  setSearch]  = useState('')
@@ -351,16 +362,41 @@ export default function OrderTemplateDetailPage() {
     } catch (e) { console.error('Failed to remove count unit', e) }
   }
 
-  // ── Location assignment ────────────────────────────────────────────────────
-  const handleToggleLocation = async (locationId, isAssigned) => {
+  // ── Location assignment (by count day) ─────────────────────────────────────
+  // Each store has a row of day checkboxes. Any day checked = assigned on those
+  // days; unchecking the last day unassigns the store. Saves on every click.
+  const [savingDays, setSavingDays] = useState(null)   // location_id being saved
+  const [daysError,  setDaysError]  = useState(null)
+
+  const handleToggleDay = async (loc, day) => {
+    const current = (template.locations || []).find(l => l.location_id === loc.store_guid)
+    const before  = current?.days || []
+    const days    = before.includes(day)
+      ? before.filter(d => d !== day)
+      : [...before, day].sort((a, b) => a - b)
+
+    // Show the change right away; put it back if the save fails
+    const applyDays = (newDays) => setTemplate(prev => {
+      const others = (prev.locations || []).filter(l => l.location_id !== loc.store_guid)
+      const next   = newDays.length
+        ? [...others, { location_id: loc.store_guid, location_name: loc.location_name, days: newDays }]
+        : others
+      next.sort((a, b) => (a.location_name || '').localeCompare(b.location_name || ''))
+      return { ...prev, locations: next }
+    })
+
+    applyDays(days)
+    setSavingDays(loc.store_guid)
+    setDaysError(null)
     try {
-      if (isAssigned) {
-        await axios.delete(`/api/sheet-templates/${id}/locations/${locationId}`)
-      } else {
-        await axios.post(`/api/sheet-templates/${id}/locations`, { location_id: locationId })
-      }
-      fetchTemplate()
-    } catch (e) { console.error('Failed to toggle location', e) }
+      await axios.put(`/api/sheet-templates/${id}/locations/${loc.store_guid}`, { days })
+    } catch (e) {
+      console.error('Failed to save days', e)
+      applyDays(before)
+      setDaysError(`Couldn't save ${loc.location_name}: ${e.response?.data?.error || 'try again'}`)
+    } finally {
+      setSavingDays(null)
+    }
   }
 
   const toggleCollapse = (sectionId) => {
@@ -376,7 +412,7 @@ export default function OrderTemplateDetailPage() {
   if (error)    return <div className="page"><div className="alert alert-error">{error}</div></div>
   if (!template) return null
 
-  const assignedLocationIds = new Set((template.locations || []).map(l => l.location_id))
+  const daysByLocation = Object.fromEntries((template.locations || []).map(l => [l.location_id, l.days || []]))
 
   return (
     <div className="page">
@@ -666,22 +702,38 @@ export default function OrderTemplateDetailPage() {
                 <h2 className="card-title">Locations</h2>
                 <button className="btn btn-ghost btn-sm" onClick={() => setShowLocations(false)}>✕</button>
               </div>
-              <div className="location-list">
-                {locations.map(loc => {
-                  const isAssigned = assignedLocationIds.has(loc.store_guid)
-                  return (
-                    <div key={loc.store_guid} className="location-row">
-                      <span className="location-name">{loc.location_name}</span>
-                      <button
-                        className={`btn btn-sm ${isAssigned ? 'btn-ghost' : 'btn-secondary'}`}
-                        style={isAssigned ? { color: 'var(--error)' } : {}}
-                        onClick={() => handleToggleLocation(loc.store_guid, isAssigned)}>
-                        {isAssigned ? 'Remove' : 'Assign'}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
+              <p className="loc-days-hint">Check the days each store counts this sheet.</p>
+              {daysError && <div className="alert alert-error loc-days-error">{daysError}</div>}
+              <table className="loc-days-table">
+                <thead>
+                  <tr>
+                    <th className="loc-days-name">Store</th>
+                    {DAY_LABELS.map(d => <th key={d.day} title={d.full}>{d.short}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {locations.map(loc => {
+                    const days     = daysByLocation[loc.store_guid] || []
+                    const assigned = days.length > 0
+                    return (
+                      <tr key={loc.store_guid} className={assigned ? 'loc-days-assigned' : ''}>
+                        <td className="loc-days-name">{loc.location_name}</td>
+                        {DAY_LABELS.map(d => (
+                          <td key={d.day}>
+                            <input
+                              type="checkbox"
+                              aria-label={`${loc.location_name} ${d.full}`}
+                              checked={days.includes(d.day)}
+                              disabled={savingDays === loc.store_guid}
+                              onChange={() => handleToggleDay(loc, d.day)}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
