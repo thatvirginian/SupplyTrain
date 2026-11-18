@@ -19,3 +19,9 @@
   .usage-windows.parcheck-windows th:nth-child(3), .usage-windows.parcheck-windows td:nth-child(3):not([colspan]),
   .usage-windows.parcheck-windows th:nth-child(4), .usage-windows.parcheck-windows td:nth-child(4) { display: none; }
 }
+
+/* Clicking an order-day row shows only its windows */
+.parcheck-table tr.is-active td:not(.parcheck-product) { background: var(--bg-raised); }
+.parcheck-table tr.is-active td:not(.parcheck-product):nth-child(1),
+.parcheck-table tr.is-active td:first-child:not(.parcheck-product) { box-shadow: inset 3px 0 0 var(--accent); }
+.parcheck-day { margin-left: 0.5rem; }

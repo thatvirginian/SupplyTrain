@@ -166,3 +166,9 @@
   .usage-sources li { grid-template-columns: 60px 1fr 70px; }
   .usage-src-as { display: none; }
 }
+
+/* Order-day chips open only that day's windows */
+.usage-chip-click { cursor: pointer; }
+.usage-chip-click:hover { border-color: var(--text-muted); }
+.usage-chip-click.is-active { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.usage-day-all { margin-left: 0.75rem; font-weight: 400; }

@@ -9,15 +9,16 @@
 // Per order day: medians and the lowest left over of the last 4 usual
 // windows (windows with extra orders count; they are marked). Only real
 // windows on the current count days: windows joined from an older, more
-// frequent schedule span several deliveries and are left out. The click-down
-// groups windows by order day.
+// frequent schedule span several deliveries and are left out. Clicking the product
+// opens every window (newest first); clicking an order-day row opens only
+// that day's windows.
 // Filters / loading shared with the Usage Report: ../components/UsageFilters.jsx
 // Data: GET /api/usage/par-check (backend/features/usage/usage_routes.py)
 // =============================================================================
 import { useState, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory, groupByOrderDay,
+  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory,
   fmtCovers, fmtCountDays, SHORT_DAY, SOURCES,
 } from '../components/UsageFilters.jsx'
 import '../../../core/styles/shared-ui.css'
@@ -30,11 +31,12 @@ export default function ParCheckPage() {
   const navigate = useNavigate()
   const f = useUsageReport('/api/usage/par-check')
   const { data, qty, unitOf } = f
-  const [open, setOpen] = useState(new Set())
+  // product id -> 'all' (every window, by date) or an order day (only that day's windows)
+  const [open, setOpen] = useState({})
 
-  const toggle = (pid) => setOpen(prev => {
-    const n = new Set(prev)
-    if (n.has(pid)) n.delete(pid); else n.add(pid)
+  const show = (pid, what) => setOpen(prev => {
+    const n = { ...prev }
+    if (n[pid] === what) delete n[pid]; else n[pid] = what
     return n
   })
 
@@ -75,16 +77,20 @@ export default function ParCheckPage() {
               {groups.map(g => [
                 <tr key={`cat-${g.name}`} className="usage-category-row"><td colSpan={8}>{g.name}</td></tr>,
                 ...g.items.map(p => {
-                  const isOpen = open.has(p.product_id)
+                  const what = open[p.product_id]
+                  const isOpen = what !== undefined
                   const days = p.by_order_day.length ? p.by_order_day : [null]
                   return (
                     <Fragment key={p.product_id}>
                       {days.map((d, i) => (
                         <tr key={d ? d.order_day : 'none'}
-                          className={`row-link ${i === days.length - 1 ? 'parcheck-last' : 'parcheck-inner'}`}
-                          onClick={() => toggle(p.product_id)}>
+                          className={`row-link ${i === days.length - 1 ? 'parcheck-last' : 'parcheck-inner'} ${d && what === d.order_day ? 'is-active' : ''}`}
+                          title={d ? `Click to see only the ${d.order_day} windows` : undefined}
+                          onClick={() => show(p.product_id, d ? d.order_day : 'all')}>
                           {i === 0 && (
-                            <td rowSpan={days.length}>
+                            <td rowSpan={days.length} className="parcheck-product"
+                              title="Click to see every window, newest first"
+                              onClick={e => { e.stopPropagation(); show(p.product_id, 'all') }}>
                               <span className="usage-caret">{isOpen ? '▾' : '▸'}</span>
                               <span className="usage-product">{p.product_name}</span>
                               <div className="usage-sub" title="Current count days: counted on these days in at least 2 of the last 3 weeks">
@@ -121,7 +127,8 @@ export default function ParCheckPage() {
                       {isOpen && (
                         <tr className="usage-detail-row">
                           <td colSpan={8}>
-                            <ParWindows p={p} qty={qty} navigate={navigate} />
+                            <ParWindows p={p} qty={qty} navigate={navigate} day={what === 'all' ? null : what}
+                              onShowAll={() => show(p.product_id, 'all')} />
                           </td>
                         </tr>
                       )}
@@ -137,7 +144,10 @@ export default function ParCheckPage() {
   )
 }
 
-function ParWindows({ p, qty, navigate }) {
+// day = null: every window, newest first. day = 'Monday': only that order day's windows.
+function ParWindows({ p, qty, navigate, day, onShowAll }) {
+  const d = day && p.by_order_day.find(x => x.order_day === day)
+  const windows = day ? p.windows.filter(w => w.order_day === day) : p.windows
   return (
     <table className="usage-windows parcheck-windows">
       <thead>
@@ -152,42 +162,39 @@ function ParWindows({ p, qty, navigate }) {
         </tr>
       </thead>
       <tbody>
-        {groupByOrderDay(p.windows).map(g => {
-          const d = p.by_order_day.find(x => x.order_day === g.day)
-          return (
-            <Fragment key={g.day}>
-              <tr className="usage-day-row">
-                <td colSpan={7}>
-                  {SHORT_DAY[g.day]} order
-                  {d && <> · covers {d.covers} · par <b>{qty(p, d.par)}</b> · lowest left <b>{qty(p, d.lowest_left)}</b></>}
-                  <span className="usage-day-n">{g.windows.length} window{g.windows.length === 1 ? '' : 's'}</span>
-                </td>
-              </tr>
-              {g.windows.map(w => (
-                <tr key={w.start_date} className={w.usual ? '' : 'usage-off'}>
-                  <td>
-                    {fmtCovers(w)}
-                    {!w.usual && <span className="usage-tag" title="Not the usual length for this order day (a missed or extra count): not used for the order-day numbers">unusual</span>}
-                    {w.extra > 0 && <span className="usage-tag" title="Extra orders came in this window">extra {qty(p, w.extra)}</span>}
-                  </td>
-                  <td className="usage-num">{qty(p, w.par)}</td>
-                  <td className="usage-num">
-                    <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>{qty(p, w.start)}</a>
-                  </td>
-                  <td className="usage-num">{w.received_regular ? qty(p, w.received_regular) : '—'}</td>
-                  <td className={`usage-num ${w.par !== null && w.stocked_to < w.par ? 'usage-diff' : ''}`}
-                    title={w.par !== null && w.stocked_to < w.par ? 'Stocked below par: the store ordered less than the par asked for' : undefined}>
-                    {qty(p, w.stocked_to)}
-                  </td>
-                  <td className="usage-num">{qty(p, w.used)}</td>
-                  <td className={`usage-num usage-strong ${w.left <= 0 ? 'usage-neg' : ''}`}>
-                    <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>{qty(p, w.left)}</a>
-                  </td>
-                </tr>
-              ))}
-            </Fragment>
-          )
-        })}
+        {day && (
+          <tr className="usage-day-row">
+            <td colSpan={7}>
+              {SHORT_DAY[day]} order
+              {d && <> · covers {d.covers} · par <b>{qty(p, d.par)}</b> · lowest left <b>{qty(p, d.lowest_left)}</b></>}
+              <a className="usage-link usage-day-all" onClick={onShowAll}>show all windows</a>
+              <span className="usage-day-n">{windows.length} window{windows.length === 1 ? '' : 's'}</span>
+            </td>
+          </tr>
+        )}
+        {windows.map(w => (
+          <tr key={w.start_date} className={w.usual ? '' : 'usage-off'}>
+            <td>
+              {fmtCovers(w)}
+              {!day && <span className="usage-chip-covers parcheck-day">{SHORT_DAY[w.order_day]} order</span>}
+              {!w.usual && <span className="usage-tag" title="Not the usual length for this order day (a missed or extra count): not used for the order-day numbers">unusual</span>}
+              {w.extra > 0 && <span className="usage-tag" title="Extra orders came in this window">extra {qty(p, w.extra)}</span>}
+            </td>
+            <td className="usage-num">{qty(p, w.par)}</td>
+            <td className="usage-num">
+              <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>{qty(p, w.start)}</a>
+            </td>
+            <td className="usage-num">{w.received_regular ? qty(p, w.received_regular) : '—'}</td>
+            <td className={`usage-num ${w.par !== null && w.stocked_to < w.par ? 'usage-diff' : ''}`}
+              title={w.par !== null && w.stocked_to < w.par ? 'Stocked below par: the store ordered less than the par asked for' : undefined}>
+              {qty(p, w.stocked_to)}
+            </td>
+            <td className="usage-num">{qty(p, w.used)}</td>
+            <td className={`usage-num usage-strong ${w.left <= 0 ? 'usage-neg' : ''}`}>
+              <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>{qty(p, w.left)}</a>
+            </td>
+          </tr>
+        ))}
         {p.joined_hidden > 0 && (
           <tr className="usage-day-row usage-day-note">
             <td colSpan={7}>

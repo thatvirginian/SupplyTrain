@@ -14,7 +14,8 @@
 // delivered in the window, regular + extra, before any commissary change.
 // Windows use the product's CURRENT count days; older history on more days is
 // joined into the same wider windows (exact: counts in between cancel out).
-// The click-down groups windows by order day.
+// Click a product: all its windows, newest first. Click an order-day chip:
+// only that day's windows (click again to close).
 // Each received order / transfer / count opens its source.
 // Filters / loading shared with Par Check: ../components/UsageFilters.jsx
 // Data: GET /api/usage (backend/features/usage/usage_routes.py)
@@ -22,7 +23,7 @@
 import { useState, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory, groupByOrderDay,
+  useUsageReport, UsageFilterBar, UsageStatus, groupByCategory, 
   fmtDay, fmtCovers, fmtCountDays, SHORT_DAY, SOURCES,
 } from '../components/UsageFilters.jsx'
 import '../../../core/styles/shared-ui.css'
@@ -42,10 +43,17 @@ export default function UsagePage() {
   const f = useUsageReport('/api/usage')
   const { data, qty, unitOf } = f
 
-  const [open,    setOpen]    = useState(new Set())    // product ids expanded
+  // product id -> what is open under it: 'all' (every window, by date) or an
+  // order day ('Monday': only that day's windows)
+  const [open,    setOpen]    = useState({})
   const [openWin, setOpenWin] = useState(new Set())    // `${pid}:${start}` with sources shown
 
-  const toggle = (setFn, key) => setFn(prev => {
+  const show = (pid, what) => setOpen(prev => {
+    const n = { ...prev }
+    if (n[pid] === what) delete n[pid]; else n[pid] = what
+    return n
+  })
+  const toggleWin = (key) => setOpenWin(prev => {
     const n = new Set(prev)
     if (n.has(key)) n.delete(key); else n.add(key)
     return n
@@ -87,10 +95,11 @@ export default function UsagePage() {
               {groups.map(g => [
                 <tr key={`cat-${g.name}`} className="usage-category-row"><td colSpan={7}>{g.name}</td></tr>,
                 ...g.items.map(p => {
-                  const isOpen = open.has(p.product_id)
+                  const what = open[p.product_id]
+                  const isOpen = what !== undefined
                   return (
                     <Fragment key={p.product_id}>
-                      <tr className="row-link" onClick={() => toggle(setOpen, p.product_id)}>
+                      <tr className="row-link" onClick={() => show(p.product_id, 'all')}>
                         <td>
                           <span className="usage-caret">{isOpen ? '▾' : '▸'}</span>
                           <span className="usage-product">{p.product_name}</span>
@@ -102,8 +111,10 @@ export default function UsagePage() {
                           {p.normal_by_order_day.length === 0
                             ? <span className="usage-sub">no usual windows yet</span>
                             : p.normal_by_order_day.map(n => (
-                              <span key={n.order_day} className="usage-chip"
-                                title={`${n.order_day} par: what the ${n.order_day} order has to cover, ${n.covers} (${n.days} day${n.days === 1 ? '' : 's'}). Median of the last ${n.windows} window${n.windows === 1 ? '' : 's'}`}>
+                              <span key={n.order_day}
+                                className={`usage-chip usage-chip-click ${what === n.order_day ? 'is-active' : ''}`}
+                                onClick={e => { e.stopPropagation(); show(p.product_id, n.order_day) }}
+                                title={`${n.order_day} par: what the ${n.order_day} order has to cover, ${n.covers} (${n.days} day${n.days === 1 ? '' : 's'}). Median of the last ${n.windows} window${n.windows === 1 ? '' : 's'}. Click to see only these windows.`}>
                                 {SHORT_DAY[n.order_day]} <b>{qty(p, n.median_regular)}</b>
                                 <span className="usage-chip-covers">{n.covers}</span>
                                 {n.windows < 4 && <span className="usage-chip-n">({n.windows})</span>}
@@ -120,8 +131,9 @@ export default function UsagePage() {
                       {isOpen && (
                         <tr className="usage-detail-row">
                           <td colSpan={7}>
-                            <WindowTable p={p} qty={qty} openWin={openWin}
-                              toggleWin={k => toggle(setOpenWin, k)} navigate={navigate} />
+                            <WindowTable p={p} qty={qty} day={what === 'all' ? null : what}
+                              openWin={openWin} toggleWin={toggleWin} navigate={navigate}
+                              onShowAll={() => show(p.product_id, 'all')} />
                           </td>
                         </tr>
                       )}
@@ -137,7 +149,81 @@ export default function UsagePage() {
   )
 }
 
-function WindowTable({ p, qty, openWin, toggleWin, navigate }) {
+// day = null: every window, newest first. day = 'Monday': only that order
+// day's windows, under a header with its median.
+function WindowTable({ p, qty, day, openWin, toggleWin, navigate, onShowAll }) {
+  const n = day && p.normal_by_order_day.find(x => x.order_day === day)
+  const windows = day ? p.windows.filter(w => w.order_day === day) : p.windows
+
+  const row = (w) => {
+    const key = `${p.product_id}:${w.start_date}`
+    const shown = openWin.has(key)
+    const net = w.transfers_in - w.transfers_out
+    return (
+      <Fragment key={key}>
+        <tr className={`row-link ${w.usual ? '' : 'usage-off'}`} onClick={() => toggleWin(key)}>
+          <td>
+            <span className="usage-caret">{shown ? '▾' : '▸'}</span>
+            {fmtCovers(w)}
+            {w.skipped_counts > 0 && (
+              <span className="usage-tag usage-tag-join" title={w.flags.find(f => f.code === 'joined')?.text}>
+                joined ×{w.skipped_counts + 1}
+              </span>
+            )}
+            {!w.usual && (
+              <span className="usage-tag" title={w.flags.find(f => f.code.endsWith('_than_usual'))?.text}>
+                {w.flags.some(f => f.code === 'longer_than_usual') ? 'longer' : 'extra count'}
+              </span>
+            )}
+            {w.flags.filter(f => !f.code.endsWith('_than_usual') && f.code !== 'joined').map(f => (
+              <span key={f.code} className="usage-tag usage-tag-warn" title={f.text}>⚠</span>
+            ))}
+          </td>
+          <td className="usage-num">{qty(p, w.start)}</td>
+          <td className={`usage-num usage-muted ${w.ordered !== w.received ? 'usage-diff' : ''}`}
+            title={w.ordered !== w.received ? 'Received differs from what was ordered (commissary change or a returned line)' : undefined}>
+            {w.ordered ? qty(p, w.ordered) : '—'}
+          </td>
+          <td className="usage-num">{w.received ? qty(p, w.received) : '—'}</td>
+          <td className="usage-num">{net ? (net > 0 ? '+' : '−') + qty(p, Math.abs(net)) : '—'}</td>
+          <td className="usage-num">{qty(p, w.end)}</td>
+          <td className="usage-num usage-strong">{qty(p, w.actual)}</td>
+          <td className="usage-num usage-extra">{w.extra ? qty(p, w.extra) : '—'}</td>
+          <td className={`usage-num usage-strong ${w.regular < 0 ? 'usage-neg' : ''}`}>{qty(p, w.regular)}</td>
+        </tr>
+        {shown && (
+          <tr className="usage-sources-row">
+            <td colSpan={9}>
+              <ul className="usage-sources">
+                <li>
+                  <span className="usage-src-date">{fmtDay(w.start_date)}</span>
+                  <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>Start count</a>
+                  <span className="usage-src-as">on hand</span>
+                  <span className="usage-src-qty">{qty(p, w.start)}</span>
+                </li>
+                {w.sources.map((s, i) => (
+                  <li key={i}>
+                    <span className="usage-src-date">{fmtDay(s.date)}</span>
+                    <a className="usage-link" onClick={() => navigate(SOURCE_LINK[s.type](s.id))}>{s.label}</a>
+                    <span className="usage-src-as">{COUNTS_AS[s.counts_as]}</span>
+                    <span className="usage-src-qty">{qty(p, s.base_quantity)}</span>
+                  </li>
+                ))}
+                <li>
+                  <span className="usage-src-date">{fmtDay(w.end_date)}</span>
+                  <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>End count</a>
+                  <span className="usage-src-as">− on hand</span>
+                  <span className="usage-src-qty">{qty(p, w.end)}</span>
+                </li>
+                {w.flags.map(f => <li key={f.code} className="usage-src-flag">⚠ {f.text}</li>)}
+              </ul>
+            </td>
+          </tr>
+        )}
+      </Fragment>
+    )
+  }
+
   return (
     <table className="usage-windows">
       <thead>
@@ -154,88 +240,17 @@ function WindowTable({ p, qty, openWin, toggleWin, navigate }) {
         </tr>
       </thead>
       <tbody>
-        {groupByOrderDay(p.windows).map(g => {
-          const n = p.normal_by_order_day.find(x => x.order_day === g.day)
-          return (
-            <Fragment key={g.day}>
-              <tr className="usage-day-row">
-                <td colSpan={9}>
-                  {SHORT_DAY[g.day]} order
-                  {n && <> · covers {n.covers} · median <b>{qty(p, n.median_regular)}</b></>}
-                  <span className="usage-day-n">{g.windows.length} window{g.windows.length === 1 ? '' : 's'}</span>
-                </td>
-              </tr>
-              {g.windows.map(w => {
-                const key = `${p.product_id}:${w.start_date}`
-                const shown = openWin.has(key)
-                const net = w.transfers_in - w.transfers_out
-                return (
-                  <Fragment key={key}>
-                    <tr className={`row-link ${w.usual ? '' : 'usage-off'}`} onClick={() => toggleWin(key)}>
-                      <td>
-                        <span className="usage-caret">{shown ? '▾' : '▸'}</span>
-                        {fmtCovers(w)}
-                        {w.skipped_counts > 0 && (
-                          <span className="usage-tag usage-tag-join" title={w.flags.find(f => f.code === 'joined')?.text}>
-                            joined ×{w.skipped_counts + 1}
-                          </span>
-                        )}
-                        {!w.usual && (
-                          <span className="usage-tag" title={w.flags.find(f => f.code.endsWith('_than_usual'))?.text}>
-                            {w.flags.some(f => f.code === 'longer_than_usual') ? 'longer' : 'extra count'}
-                          </span>
-                        )}
-                        {w.flags.filter(f => !f.code.endsWith('_than_usual') && f.code !== 'joined').map(f => (
-                          <span key={f.code} className="usage-tag usage-tag-warn" title={f.text}>⚠</span>
-                        ))}
-                      </td>
-                      <td className="usage-num">{qty(p, w.start)}</td>
-                      <td className={`usage-num usage-muted ${w.ordered !== w.received ? 'usage-diff' : ''}`}
-                        title={w.ordered !== w.received ? 'Received differs from what was ordered (commissary change or a returned line)' : undefined}>
-                        {w.ordered ? qty(p, w.ordered) : '—'}
-                      </td>
-                      <td className="usage-num">{w.received ? qty(p, w.received) : '—'}</td>
-                      <td className="usage-num">{net ? (net > 0 ? '+' : '−') + qty(p, Math.abs(net)) : '—'}</td>
-                      <td className="usage-num">{qty(p, w.end)}</td>
-                      <td className="usage-num usage-strong">{qty(p, w.actual)}</td>
-                      <td className="usage-num usage-extra">{w.extra ? qty(p, w.extra) : '—'}</td>
-                      <td className={`usage-num usage-strong ${w.regular < 0 ? 'usage-neg' : ''}`}>{qty(p, w.regular)}</td>
-                    </tr>
-                    {shown && (
-                      <tr className="usage-sources-row">
-                        <td colSpan={9}>
-                          <ul className="usage-sources">
-                            <li>
-                              <span className="usage-src-date">{fmtDay(w.start_date)}</span>
-                              <a className="usage-link" onClick={() => w.start_inventory_id && navigate(`/inventory/${w.start_inventory_id}`)}>Start count</a>
-                              <span className="usage-src-as">on hand</span>
-                              <span className="usage-src-qty">{qty(p, w.start)}</span>
-                            </li>
-                            {w.sources.map((s, i) => (
-                              <li key={i}>
-                                <span className="usage-src-date">{fmtDay(s.date)}</span>
-                                <a className="usage-link" onClick={() => navigate(SOURCE_LINK[s.type](s.id))}>{s.label}</a>
-                                <span className="usage-src-as">{COUNTS_AS[s.counts_as]}</span>
-                                <span className="usage-src-qty">{qty(p, s.base_quantity)}</span>
-                              </li>
-                            ))}
-                            <li>
-                              <span className="usage-src-date">{fmtDay(w.end_date)}</span>
-                              <a className="usage-link" onClick={() => w.end_inventory_id && navigate(`/inventory/${w.end_inventory_id}`)}>End count</a>
-                              <span className="usage-src-as">− on hand</span>
-                              <span className="usage-src-qty">{qty(p, w.end)}</span>
-                            </li>
-                            {w.flags.map(f => <li key={f.code} className="usage-src-flag">⚠ {f.text}</li>)}
-                          </ul>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </Fragment>
-          )
-        })}
+        {day && (
+          <tr className="usage-day-row">
+            <td colSpan={9}>
+              {SHORT_DAY[day]} order
+              {n && <> · covers {n.covers} · median <b>{qty(p, n.median_regular)}</b></>}
+              <a className="usage-link usage-day-all" onClick={onShowAll}>show all windows</a>
+              <span className="usage-day-n">{windows.length} window{windows.length === 1 ? '' : 's'}</span>
+            </td>
+          </tr>
+        )}
+        {windows.map(row)}
       </tbody>
     </table>
   )
