@@ -9,7 +9,10 @@ import '../../../core/styles/order-and-print.css'
 const SOURCE_BADGE = {
   count_sheet: 'badge-info',
   manual:      'badge-warning',
+  production:  'badge-success',
 }
+
+const SOURCE_LABEL = { count_sheet: 'Count Sheet', manual: 'Manual', production: 'Production' }
 
 const STATUS_BADGE = {
   draft:     'badge-warning',
@@ -91,6 +94,7 @@ export default function InventoryHistoryPage() {
           <option value="">All Sources</option>
           <option value="count_sheet">Count Sheet</option>
           <option value="manual">Manual</option>
+          <option value="production">Production</option>
         </select>
       </div>
 
@@ -121,13 +125,16 @@ export default function InventoryHistoryPage() {
                 ) : submissions.map(s => (
                   <tr key={s.id} className="row-link"
                     onClick={() => navigate(
-                      s.status === 'draft' ? `/inventory/entry/${s.id}` : `/inventory/${s.id}`
+                      // A production run's End Inv draft is filled in on the run itself
+                      s.status === 'draft'
+                        ? (s.production_run_id ? `/production/run/${s.production_run_id}` : `/inventory/entry/${s.id}`)
+                        : `/inventory/${s.id}`
                     )}>
                     <td>{formatDate(s.count_date)}</td>
                     <td style={{ color: 'var(--text-secondary)' }}>{s.location_name}</td>
                     <td>
                       <span className={`badge ${SOURCE_BADGE[s.source]}`}>
-                        {s.source === 'count_sheet' ? 'Count Sheet' : 'Manual'}
+                        {SOURCE_LABEL[s.source] || s.source}
                       </span>
                     </td>
                     <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>

@@ -124,8 +124,12 @@ export default function InventoryDetailPage() {
 
   const handleDelete = async () => {
     const fromSheet = inventory?.source === 'count_sheet'
+    const fromRun   = inventory?.source === 'production'
     const message = fromSheet
       ? 'Delete this inventory? Its purchase orders are not affected. ' +
+        "The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
+      : fromRun
+      ? 'Delete this inventory? The production run keeps what was made; only its End Inv counts are removed. ' +
         "The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
       : "Delete this inventory? The day's count goes back to the previous inventory for that day, if there is one. This cannot be undone."
     if (!confirm(message)) return
@@ -183,9 +187,10 @@ export default function InventoryDetailPage() {
             <h1 className="page-title">{inventory.location_name}</h1>
             <p className="page-subtitle">
               {formatDate(inventory.count_date)} ·{' '}
-              <span className={`badge ${inventory.source === 'count_sheet' ? 'badge-info' : 'badge-warning'}`}
+              <span className={`badge ${inventory.source === 'count_sheet' ? 'badge-info'
+                  : inventory.source === 'production' ? 'badge-success' : 'badge-warning'}`}
                 style={{ fontSize: '0.65rem' }}>
-                {isFromCountSheet ? 'Count Sheet' : 'Manual'}
+                {isFromCountSheet ? 'Count Sheet' : inventory.source === 'production' ? 'Production' : 'Manual'}
               </span>
               {inventory.template_name && ` · ${inventory.template_name}`}
             </p>
@@ -196,6 +201,12 @@ export default function InventoryDetailPage() {
             <button className="btn btn-secondary"
               onClick={() => navigate(`/count-sheet/${inventory.sheet_submission_id}`)}>
               View Count Sheet
+            </button>
+          )}
+          {inventory.production_run_id && (
+            <button className="btn btn-secondary"
+              onClick={() => navigate(`/production/run/${inventory.production_run_id}`)}>
+              View Production Run
             </button>
           )}
           {canCorrect && (

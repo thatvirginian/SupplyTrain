@@ -18,6 +18,7 @@ import './InventoryDailyPage.css'
 const SOURCE_BADGE = {
   count_sheet: { cls: 'badge-info',    label: 'Count Sheet' },
   manual:      { cls: 'badge-warning', label: 'Manual' },
+  production:  { cls: 'badge-success', label: 'Production' },
 }
 
 // Today in the browser's time zone, as YYYY-MM-DD (not UTC)

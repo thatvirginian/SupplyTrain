@@ -84,7 +84,7 @@ def list_inventory_submissions():
     roles       = g.user.get('roles', [])
     is_admin    = 'admin' in roles
     location_id = request.args.get('location_id')
-    source      = request.args.get('source')   # 'count_sheet' | 'manual'
+    source      = request.args.get('source')   # 'count_sheet' | 'manual' | 'production'
     page        = request.args.get('page', 1, type=int)
     per_page    = request.args.get('per_page', 20, type=int)
     offset      = (page - 1) * per_page
@@ -122,7 +122,8 @@ def list_inventory_submissions():
                 ivs.template_id,
                 ivs.notes, ivs.created_at,
                 l.location_name,
-                it.name AS template_name,
+                COALESCE(it.name, pt.name) AS template_name,
+                pr.id AS production_run_id,
                 -- Products counted: a draft only has lines; a submitted inventory has totals
                 CASE WHEN ivs.status = 'draft' THEN (
                     SELECT COUNT(DISTINCT e.product_id) FROM inventory_count_entries e
@@ -134,6 +135,8 @@ def list_inventory_submissions():
             FROM inventory_submissions ivs
             LEFT JOIN locations l            ON l.store_guid::text = ivs.location_id
             LEFT JOIN inventory_templates it ON ivs.template_id    = it.id
+            LEFT JOIN production_runs pr     ON pr.inventory_submission_id = ivs.id
+            LEFT JOIN production_templates pt ON pt.id = pr.template_id
             {where}
             ORDER BY ivs.count_date DESC, ivs.created_at DESC
             LIMIT :limit OFFSET :offset
@@ -148,14 +151,41 @@ def list_inventory_submissions():
     })
 
 
-def _load_template_sections(conn, inventory_template_id, sheet_template_id):
+def _load_template_sections(conn, inventory_template_id, sheet_template_id,
+                            production_template_id=None):
     """
     Sections -> products -> count units, in the same shape for both layouts:
       [{id, name, sort_order, items: [{id, product_id, product_name, base_unit,
                                        base_unit_id, count_units: [{unit_id, unit_name}]}]}]
     Manual inventories use their inventory template; order sheet inventories use
-    the order sheet template the sheet was filled in on. Empty list when neither.
+    the order sheet template the sheet was filled in on; production inventories
+    (a production run's End Inv) use the production template, whose one unit per
+    product is the count unit. Empty list when none.
     """
+    if not inventory_template_id and not sheet_template_id and production_template_id:
+        rows = conn.execute(text("""
+            SELECT sec.id, sec.name, sec.sort_order,
+                json_agg(
+                    json_build_object(
+                        'id',           itm.id,
+                        'product_id',   itm.product_id,
+                        'product_name', p.name,
+                        'base_unit',    u.name,
+                        'base_unit_id', p.base_unit_id,
+                        'count_units',  json_build_array(json_build_object(
+                                            'unit_id', itm.unit_id, 'unit_name', cu.name))
+                    ) ORDER BY itm.sort_order, itm.id
+                ) FILTER (WHERE itm.id IS NOT NULL) AS items
+            FROM production_template_sections sec
+            LEFT JOIN production_template_items itm ON itm.section_id = sec.id
+            LEFT JOIN products p ON itm.product_id = p.id
+            LEFT JOIN units u    ON p.base_unit_id = u.id
+            LEFT JOIN units cu   ON itm.unit_id    = cu.id
+            WHERE sec.template_id = :template_id
+            GROUP BY sec.id
+            ORDER BY sec.sort_order, sec.id
+        """), {'template_id': production_template_id}).mappings().all()
+        return [dict(r, items=r['items'] or []) for r in rows]
     if inventory_template_id:
         tables = ('inventory_template_sections', 'inventory_template_items',
                   'inventory_template_item_units', inventory_template_id)
@@ -222,13 +252,18 @@ def get_inventory_submission(submission_id):
                 ivs.created_at, ivs.updated_at,
                 l.location_name,
                 -- Manual: the inventory template. Order sheet: the order sheet template.
-                COALESCE(it.name, st.name) AS template_name,
-                ss.template_id AS sheet_template_id
+                -- Production (End Inv of a production run): the production template.
+                COALESCE(it.name, st.name, pt.name) AS template_name,
+                ss.template_id AS sheet_template_id,
+                pr.id          AS production_run_id,
+                pr.template_id AS production_template_id
             FROM inventory_submissions ivs
             LEFT JOIN locations l            ON l.store_guid::text = ivs.location_id
             LEFT JOIN inventory_templates it ON ivs.template_id    = it.id
             LEFT JOIN sheet_submissions ss   ON ss.id = ivs.sheet_submission_id
             LEFT JOIN sheet_templates st     ON st.id = ss.template_id
+            LEFT JOIN production_runs pr     ON pr.inventory_submission_id = ivs.id
+            LEFT JOIN production_templates pt ON pt.id = pr.template_id
             WHERE ivs.id = :id
         """), {'id': submission_id}).mappings().fetchone()
 
@@ -302,7 +337,7 @@ def get_inventory_submission(submission_id):
         # The layout the inventory was counted on: its inventory template, or
         # for an order sheet inventory, the order sheet's template.
         template_sections = _load_template_sections(
-            conn, sub['template_id'], sub['sheet_template_id'])
+            conn, sub['template_id'], sub['sheet_template_id'], sub['production_template_id'])
 
         # The lines this inventory saved, exactly as typed (current rows only)
         entry_rows = conn.execute(text("""

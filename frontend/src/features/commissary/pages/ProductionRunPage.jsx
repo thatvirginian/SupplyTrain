@@ -7,8 +7,10 @@ import '../../../core/styles/shared-ui.css'   // .alert
 import '../../../core/styles/count-entry-sheet.css'
 import './ProductionPages.css'
 
-// One production run: what the commissary made, product by product, in the
-// unit set on the production template. Several runs a day add up.
+// One production run: what the commissary made (Made) and what is on hand after
+// production (End Inv), product by product, in the unit set on the production
+// template. Several runs a day add up. The End Inv boxes are the commissary's
+// inventory for the day: submitting the run submits that inventory too.
 // Drafts: Save / Submit / Delete. Submitted: read-only, except for admins and
 // commissary GMs (can_edit), whose saves are recorded as corrections.
 
@@ -24,7 +26,8 @@ export default function ProductionRunPage() {
   const [run,        setRun]        = useState(null)
   const [loading,    setLoading]    = useState(true)
   const [error,      setError]      = useState(null)
-  const [entries,    setEntries]    = useState({})     // { product_id: '2.5' }
+  const [entries,    setEntries]    = useState({})     // Made:    { product_id: '2.5' }
+  const [endEntries, setEndEntries] = useState({})     // End Inv: { product_id: '12' }
   const [dirty,      setDirty]      = useState(false)
   const [notes,      setNotes]      = useState('')     // correction reason
   const [saving,     setSaving]     = useState(false)
@@ -38,9 +41,13 @@ export default function ProductionRunPage() {
     try {
       const res = await axios.get(`/api/production-runs/${runId}`)
       setRun(res.data)
-      const e = {}
+      const e = {}, end = {}
       res.data.lines.forEach(l => { e[l.product_id] = String(l.quantity) })
+      res.data.sections.forEach(s => s.items.forEach(it => {
+        if (it.end_quantity != null) end[it.product_id] = String(it.end_quantity)
+      }))
       setEntries(e)
+      setEndEntries(end)
       setDirty(false)
     } catch (e) {
       setError(e.response?.data?.error || 'Could not load the production run.')
@@ -58,16 +65,27 @@ export default function ProductionRunPage() {
     setDirty(true)
   }
 
+  const handleEndChange = (productId, value) => {
+    setEndEntries(prev => ({ ...prev, [productId]: value }))
+    setDirty(true)
+  }
+
   // Returns true when the save worked, so Submit stops on a failed save.
   const handleSave = async () => {
     setSaving(true)
     setSaveError(null)
     try {
       await axios.put(`/api/production-runs/${runId}/save`, {
-        // One entry per box; blank = no amount (removes a draft line).
+        // One entry per product row; blank Made = no amount (removes a draft line),
+        // blank End Inv = not counted.
         entries: allItems.map(it => {
           const v = entries[it.product_id]
-          return { product_id: it.product_id, quantity: v === undefined || v === '' ? null : v }
+          const ev = endEntries[it.product_id]
+          return {
+            product_id:   it.product_id,
+            quantity:     v === undefined || v === '' ? null : v,
+            end_quantity: ev === undefined || ev === '' ? null : ev,
+          }
         }),
         correction_notes: notes.trim() || null,
       })
@@ -87,7 +105,7 @@ export default function ProductionRunPage() {
   }
 
   const handleSubmit = async () => {
-    if (!confirm('Submit this production run? It will count toward the day\'s production.')) return
+    if (!confirm('Submit this production run? What was made counts toward the day\'s production, and the End Inv becomes the commissary\'s inventory.')) return
     if (!(await handleSave())) return
     setSubmitting(true)
     try {
@@ -102,7 +120,7 @@ export default function ProductionRunPage() {
 
   const handleDelete = async () => {
     const what = run.status === 'submitted'
-      ? 'Delete this SUBMITTED production run? Its amounts will no longer count toward the day.'
+      ? 'Delete this SUBMITTED production run? Its amounts will no longer count toward the day, and its End Inv inventory is deleted too.'
       : 'Delete this draft production run?'
     if (!confirm(what)) return
     try {
@@ -181,6 +199,16 @@ export default function ProductionRunPage() {
         </div>
       )}
 
+      <div className="prod-end-note">
+        End Inv = what is on hand after production. It becomes {run.location_name}'s inventory
+        for {formatDate(run.production_date)}{isSubmitted ? '' : ' when you submit'}; leave it blank for products not counted.
+        {run.inventory_submission_id && (
+          <> {' '}<a href={`/inventory/${run.inventory_submission_id}`}
+            onClick={e => { e.preventDefault(); navigate(`/inventory/${run.inventory_submission_id}`) }}>
+            View inventory →</a></>
+        )}
+      </div>
+
       {saveError && (
         <div className="alert alert-error" style={{ margin: '0.75rem 1rem 0' }}>
           <div>{saveError.message}</div>
@@ -203,7 +231,8 @@ export default function ProductionRunPage() {
         <div className="sheet-sections-grid">
           {run.sections.map(section => {
             const isCollapsed = collapsed.has(section.id)
-            const filled = section.items.filter(it => (entries[it.product_id] ?? '') !== '').length
+            const filled = section.items.filter(it =>
+              (entries[it.product_id] ?? '') !== '' || (endEntries[it.product_id] ?? '') !== '').length
             return (
               <div key={section.id} className="sheet-section">
                 <div className="sheet-section-title"
@@ -244,7 +273,7 @@ export default function ProductionRunPage() {
                           </div>
                         )}
                       </div>
-                      <div className="sheet-count-row">
+                      <div className="sheet-count-row prod-count-row">
                         <div className="sheet-count-unit"
                           title={it.not_on_template ? 'No longer on the template' : undefined}>
                           {it.unit_name}
@@ -259,7 +288,22 @@ export default function ProductionRunPage() {
                             onChange={e => handleChange(it.product_id, e.target.value)}
                           />
                         </div>
+                        <div className="sheet-count-input-wrap">
+                          <label className="sheet-count-label">End Inv</label>
+                          <NumericInput
+                            className="sheet-count-input"
+                            placeholder="—"
+                            value={endEntries[it.product_id] ?? ''}
+                            disabled={readOnly}
+                            onChange={e => handleEndChange(it.product_id, e.target.value)}
+                          />
+                        </div>
                       </div>
+                      {it.end_other?.length > 0 && (
+                        <div className="prod-end-other">
+                          Also counted: {it.end_other.map(o => `${fmtQty(o.quantity)} ${o.unit_name}`).join(' + ')}
+                        </div>
+                      )}
                       {corrected && (
                         <div className="prod-was" title={`${line.corrected_by} · ${formatTimestamp(line.corrected_at)}${line.correction_notes ? ' · ' + line.correction_notes : ''}`}>
                           was {fmtQty(line.original_quantity)} {it.unit_name} · corrected by {line.corrected_by}

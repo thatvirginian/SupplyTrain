@@ -12,6 +12,16 @@
 # The unit comes from the template on the server, never from the browser. A
 # line keeps the unit it was first entered in, even if the template changes.
 #
+# END INVENTORY: each product also has an End Inv box (what is on hand after
+# production, like the paper sheet). The End Inv boxes of a run ARE an ordinary
+# commissary inventory (inventory_submissions, source 'production', dated the
+# production date), created on the first End Inv saved and linked from
+# production_runs.inventory_submission_id. Its lines are written with the
+# inventory service, so every inventory rule applies: drafts do not count,
+# submitting the run submits the inventory, the latest submitted count of the
+# day wins product by product, corrections keep a trail. Blank End Inv = not
+# counted. End Inv is entered in the same unit as Made.
+#
 # Who:
 #   record (create, save, submit drafts)   admin, commissary GM, commissary staff
 #                                          (staff: their own commissary only)
@@ -41,6 +51,10 @@ import logging
 from core.auth import comm_required, can_edit_submitted_production, _is_admin, _get_user_location
 from core.database import get_engine
 from core.units import load_base_units, load_conversion_map, base_factor
+from features.inventory.inventory_count_service import (
+    supersede_line_pairs, insert_lines, sync_counts_from_entries,
+    refresh_day_counts, adopt_day_counts,
+)
 from features.commissary.commissary_access import (
     CommissaryAccessError, list_commissary_locations, resolve_commissary_location,
 )
@@ -70,7 +84,7 @@ def _load_run(conn, run_id):
     run = conn.execute(text("""
         SELECT pr.id, pr.template_id, pr.location_id, pr.production_date, pr.status,
                pr.notes, pr.created_by, pr.created_at, pr.updated_at,
-               pr.submitted_by, pr.submitted_at,
+               pr.submitted_by, pr.submitted_at, pr.inventory_submission_id,
                pt.name AS template_name, l.location_name
         FROM production_runs pr
         LEFT JOIN production_templates pt ON pt.id = pr.template_id
@@ -152,7 +166,10 @@ def list_production_runs():
                        (SELECT COUNT(*) FROM production_run_items pri
                         WHERE pri.run_id = pr.id AND pri.quantity <> 0) AS item_count,
                        (SELECT COUNT(*) FROM production_run_items pri
-                        WHERE pri.run_id = pr.id AND pri.corrected_at IS NOT NULL) AS corrected_count
+                        WHERE pri.run_id = pr.id AND pri.corrected_at IS NOT NULL) AS corrected_count,
+                       (SELECT COUNT(DISTINCT e.product_id) FROM inventory_count_entries e
+                        WHERE e.inventory_submission_id = pr.inventory_submission_id
+                          AND e.superseded_at IS NULL) AS end_count
                 FROM production_runs pr
                 LEFT JOIN production_templates pt ON pt.id = pr.template_id
                 LEFT JOIN locations l             ON l.store_guid::text = pr.location_id
@@ -234,6 +251,24 @@ def _run_lines(conn, run_id):
     return out
 
 
+def _end_lines(conn, inventory_submission_id):
+    """The current lines of a run's End Inv inventory (as entered + base)."""
+    if not inventory_submission_id:
+        return []
+    rows = conn.execute(text("""
+        SELECT e.product_id, p.name AS product_name, e.unit_id, u.name AS unit_name,
+               e.quantity, e.base_quantity, e.base_unit_id, bu.name AS base_unit
+        FROM inventory_count_entries e
+        JOIN products p ON p.id = e.product_id
+        LEFT JOIN units u  ON u.id  = e.unit_id
+        LEFT JOIN units bu ON bu.id = e.base_unit_id
+        WHERE e.inventory_submission_id = :sid AND e.superseded_at IS NULL
+        ORDER BY e.product_id, e.unit_id
+    """), {'sid': inventory_submission_id}).mappings().all()
+    return [dict(r, quantity=_num(r['quantity']), base_quantity=_num(r['base_quantity']))
+            for r in rows]
+
+
 @bp.route('/production-runs/<int:run_id>', methods=['GET'])
 @comm_required
 def get_production_run(run_id):
@@ -251,6 +286,7 @@ def get_production_run(run_id):
             run = _load_run(conn, run_id)
             lines = _run_lines(conn, run_id)
             by_product = {l['product_id']: l for l in lines}
+            end_lines = _end_lines(conn, run['inventory_submission_id'])
 
             template = load_production_template(conn, run['template_id']) if run['template_id'] else None
             sections = []
@@ -273,19 +309,41 @@ def get_production_run(run_id):
                         'line':         line,
                     })
                 sections.append({'id': s['id'], 'name': s['name'], 'items': items})
-            extra = [l for l in lines if l['product_id'] not in on_template]
+
+            # Products on this run (made or counted) that the template no longer has.
+            extra = {}
+            for l in lines:
+                if l['product_id'] not in on_template:
+                    extra[l['product_id']] = {
+                        'product_id': l['product_id'], 'product_name': l['product_name'],
+                        'category': None, 'unit_id': l['unit_id'], 'unit_name': l['unit_name'],
+                        'base_unit_id': l['base_unit_id'], 'base_unit': l['base_unit'],
+                        'line': l, 'not_on_template': True}
+            for e in end_lines:
+                if e['product_id'] not in on_template and e['product_id'] not in extra:
+                    extra[e['product_id']] = {
+                        'product_id': e['product_id'], 'product_name': e['product_name'],
+                        'category': None, 'unit_id': e['unit_id'], 'unit_name': e['unit_name'],
+                        'base_unit_id': e['base_unit_id'], 'base_unit': e['base_unit'],
+                        'line': None, 'not_on_template': True}
             if extra:
-                sections.append({'id': 'other', 'name': 'Other products', 'items': [{
-                    'product_id':   l['product_id'],
-                    'product_name': l['product_name'],
-                    'category':     None,
-                    'unit_id':      l['unit_id'],
-                    'unit_name':    l['unit_name'],
-                    'base_unit_id': l['base_unit_id'],
-                    'base_unit':    l['base_unit'],
-                    'line':         l,
-                    'not_on_template': True,
-                } for l in extra]})
+                sections.append({'id': 'other', 'name': 'Other products',
+                                 'items': sorted(extra.values(), key=lambda x: x['product_name'] or '')})
+
+            # End Inv per item: the line in the item's unit is the box; lines in any
+            # other unit (e.g. corrected from the Inventories page) are listed under it.
+            ends = {}
+            for e in end_lines:
+                ends.setdefault(e['product_id'], []).append(e)
+            for s in sections:
+                for it in s['items']:
+                    mine = ends.get(it['product_id'], [])
+                    box = next((e for e in mine if e['unit_id'] == it['unit_id']), None)
+                    it['end_quantity'] = box['quantity'] if box else None
+                    it['end_other'] = [{'quantity': e['quantity'], 'unit_name': e['unit_name']}
+                                       for e in mine if e is not box]
+                    it['end_base'] = (round(sum(e['base_quantity'] for e in mine), 4)
+                                      if mine else None)
 
             # What other submitted runs made today, per product (base units).
             others = conn.execute(text("""
@@ -329,6 +387,7 @@ def get_production_run(run_id):
 
         run['sections']   = sections
         run['lines']      = lines
+        run['end_counted'] = len({e['product_id'] for e in end_lines})
         run['can_edit']   = _can_edit(run)
         run['can_delete'] = run['status'] == 'draft' or can_edit_submitted_production()
         return jsonify(run)
@@ -344,13 +403,18 @@ def get_production_run(run_id):
 @comm_required
 def save_production_run(run_id):
     """
-    Body: {entries: [{product_id, quantity}], correction_notes?}
-    One entry per box on the sheet. quantity null / '' = blank:
+    Body: {entries: [{product_id, quantity, end_quantity}], correction_notes?}
+    One entry per product row on the sheet.
+
+    quantity (Made), blank = null / '':
       draft      -> the line is removed
       submitted  -> treated as 0 (a correction; the earlier value is kept)
-    The unit is decided here: the line's own unit if it exists, else the
-    product's unit on the run's template. A product that is neither on the run
-    nor on the template is refused.
+    end_quantity (End Inv), only when the key is sent; blank = not counted
+      (the inventory line is removed, also on a submitted run).
+
+    The unit is decided here: the run line's own unit if it exists, else the
+    product's unit on the run's template. End Inv uses the same unit. A product
+    that is neither on the run nor on the template is refused.
     Every unit must convert to the product's base unit, or nothing is saved
     (missing_conversions lists what is missing).
     """
@@ -359,23 +423,30 @@ def save_production_run(run_id):
     notes   = (data.get('correction_notes') or '').strip() or None
     user    = g.user.get('email')
 
-    parsed = {}
-    for e in entries:
-        try:
-            pid = int(e.get('product_id'))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Every entry needs a product_id'}), 400
-        q = e.get('quantity')
+    def parse_qty(q):
         if q is None or (isinstance(q, str) and not q.strip()):
-            parsed[pid] = None
-            continue
+            return None
         try:
-            q = float(q)
+            q = round(float(q), 4)
         except (TypeError, ValueError):
-            return jsonify({'error': f'Not a number: {q}'}), 400
+            raise ValueError(f'Not a number: {q}')
         if q < 0:
-            return jsonify({'error': 'Amounts cannot be negative'}), 400
-        parsed[pid] = q
+            raise ValueError('Amounts cannot be negative')
+        return q
+
+    made, ends = {}, {}
+    try:
+        for e in entries:
+            try:
+                pid = int(e.get('product_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Every entry needs a product_id'}), 400
+            if 'quantity' in e:
+                made[pid] = parse_qty(e.get('quantity'))
+            if 'end_quantity' in e:
+                ends[pid] = parse_qty(e.get('end_quantity'))
+    except ValueError as err:
+        return jsonify({'error': str(err)}), 400
 
     try:
         with get_engine().begin() as conn:
@@ -386,7 +457,7 @@ def save_production_run(run_id):
             submitted = run['status'] == 'submitted'
 
             existing = {r.product_id: r for r in conn.execute(text("""
-                SELECT product_id, quantity, unit_id, base_quantity, original_quantity
+                SELECT product_id, quantity, unit_id
                 FROM production_run_items WHERE run_id = :id
             """), {'id': run_id}).fetchall()}
             template_units = {r.product_id: r.unit_id for r in conn.execute(text("""
@@ -397,23 +468,44 @@ def save_production_run(run_id):
                 ORDER BY pti.product_id, pts.sort_order, pti.sort_order, pti.id
             """), {'tid': run['template_id']}).fetchall()} if run['template_id'] else {}
 
+            inv_id = run['inventory_submission_id']
+            end_current = {}                     # (pid, uid) -> quantity, current End Inv lines
+            if inv_id:
+                for r in conn.execute(text("""
+                    SELECT product_id, unit_id, quantity FROM inventory_count_entries
+                    WHERE inventory_submission_id = :sid AND superseded_at IS NULL
+                """), {'sid': inv_id}).fetchall():
+                    end_current[(r.product_id, r.unit_id)] = float(r.quantity)
+            end_units = {}
+            for (pid, uid) in end_current:
+                end_units.setdefault(pid, uid)
+
+            # The unit of each product row on the sheet (same rule as GET).
             unit_for = {}
-            for pid in parsed:
+            for pid in set(made) | set(ends):
                 if pid in existing:
                     unit_for[pid] = existing[pid].unit_id
                 elif pid in template_units:
                     unit_for[pid] = template_units[pid]
-                elif parsed[pid] is not None:
+                elif pid in end_units:
+                    unit_for[pid] = end_units[pid]
+                elif made.get(pid) is not None or ends.get(pid) is not None:
                     return jsonify({'error': f'Product {pid} is not on this production template'}), 400
 
             pids  = set(unit_for)
             bases = load_base_units(conn, pids)
             conv  = load_conversion_map(conn, pids, set(unit_for.values()), set(bases.values()))
 
-            missing, writes, removes = [], [], []
-            for pid, qty in parsed.items():
+            def factor_for(pid):
+                return base_factor(conv, unit_for[pid], bases.get(pid), pid)
+
+            missing = []
+
+            # ── Made ───────────────────────────────────────────────────────────
+            writes, removes = [], []
+            for pid, qty in made.items():
                 if pid not in unit_for:
-                    continue                      # blank box for a product with no line: nothing to do
+                    continue                      # blank box for a product with no line
                 old = existing.get(pid)
                 if qty is None:
                     if not old:
@@ -424,16 +516,35 @@ def save_production_run(run_id):
                     qty = 0.0
                 if old and float(old.quantity) == qty:
                     continue                      # unchanged
-                base_unit = bases.get(pid)
-                f = base_factor(conv, unit_for[pid], base_unit, pid)
+                f = factor_for(pid)
                 if f is None:
-                    missing.append({'product_id': pid, 'unit_id': unit_for[pid]})
+                    missing.append((pid, unit_for[pid]))
                     continue
                 writes.append({'pid': pid, 'qty': qty, 'uid': unit_for[pid],
-                               'bq': round(qty * f, 4), 'bu': base_unit,
-                               'old_qty': float(old.quantity) if old else None})
+                               'bq': round(qty * f, 4), 'bu': bases.get(pid)})
+
+            # ── End Inv (inventory lines in the row's unit) ────────────────────
+            end_remove, end_write = [], []
+            for pid, qty in ends.items():
+                if pid not in unit_for:
+                    continue
+                key = (pid, unit_for[pid])
+                cur = end_current.get(key)
+                if qty is None:
+                    if cur is not None:
+                        end_remove.append(key)
+                    continue
+                if cur == qty:
+                    continue
+                f = factor_for(pid)
+                if f is None:
+                    missing.append(key)
+                    continue
+                end_write.append({'product_id': pid, 'unit_id': unit_for[pid], 'quantity': qty,
+                                  'base_quantity': round(qty * f, 4), 'base_unit_id': bases.get(pid)})
 
             if missing:
+                missing = list(dict.fromkeys(missing))
                 names = conn.execute(text("""
                     SELECT m.pid AS product_id, m.uid AS unit_id, p.name AS product_name,
                            u.name AS unit_name, bu.name AS base_unit
@@ -441,10 +552,13 @@ def save_production_run(run_id):
                     JOIN products p ON p.id = m.pid
                     LEFT JOIN units u  ON u.id  = m.uid
                     LEFT JOIN units bu ON bu.id = p.base_unit_id
-                """), {'pids': [m['product_id'] for m in missing],
-                       'uids': [m['unit_id'] for m in missing]}).mappings().all()
-                raise _MissingConversions([dict(n) for n in names])
+                """), {'pids': [m[0] for m in missing],
+                       'uids': [m[1] for m in missing]}).mappings().all()
+                return jsonify({'error': 'Some units have no conversion to the product\'s base unit. '
+                                         'Nothing was saved.',
+                                'missing_conversions': [dict(n) for n in names]}), 400
 
+            # ── Write Made ─────────────────────────────────────────────────────
             if removes:
                 conn.execute(text("""
                     DELETE FROM production_run_items WHERE run_id = :id AND product_id = ANY(:pids)
@@ -480,44 +594,125 @@ def save_production_run(run_id):
                             entered_by    = EXCLUDED.entered_by,
                             entered_at    = NOW()
                     """), dict(w, id=run_id, user=user))
+
+            # ── Write End Inv through the inventory rules ──────────────────────
+            if end_write or end_remove:
+                if not inv_id:
+                    inv_id = _create_run_inventory(conn, run, user)
+                retire = end_remove + [(r['product_id'], r['unit_id']) for r in end_write
+                                       if (r['product_id'], r['unit_id']) in end_current]
+                supersede_line_pairs(conn, inv_id, retire, user)
+                insert_lines(conn, inv_id, end_write, user)
+                if submitted:
+                    changed = list({k[0] for k in end_remove} | {r['product_id'] for r in end_write})
+                    adopt_day_counts(conn, run['location_id'], run['production_date'])
+                    sync_counts_from_entries(conn, inv_id, user, changed,
+                                             mark_changes=True, correction_notes=notes)
+                    refresh_day_counts(conn, run['location_id'], run['production_date'], changed)
+                conn.execute(text("""
+                    UPDATE inventory_submissions SET updated_at = NOW() WHERE id = :id
+                """), {'id': inv_id})
+
             conn.execute(text("""
                 UPDATE production_runs SET updated_at = NOW() WHERE id = :id
             """), {'id': run_id})
-        return jsonify({'status': 'ok', 'changed': len(writes) + len(removes)})
+        return jsonify({'status': 'ok',
+                        'changed': len(writes) + len(removes) + len(end_write) + len(end_remove)})
     except CommissaryAccessError as e:
         return _access_response(e)
-    except _MissingConversions as e:
-        return jsonify({'error': 'Some units have no conversion to the product\'s base unit. '
-                                 'Nothing was saved.',
-                        'missing_conversions': e.missing}), 400
 
 
-class _MissingConversions(Exception):
-    def __init__(self, missing):
-        super().__init__('missing conversions')
-        self.missing = missing
+def _create_run_inventory(conn, run, user):
+    """
+    The commissary inventory behind a run's End Inv boxes: same location and
+    date as the run. Draft while the run is a draft; a run that is already
+    submitted (its inventory was deleted from the Inventories page) gets a
+    submitted one straight away.
+    """
+    submitted = run['status'] == 'submitted'
+    inv_id = conn.execute(text("""
+        INSERT INTO inventory_submissions (
+            template_id, location_id, count_date, source, status,
+            submitted_by, submitted_at, notes
+        ) VALUES (
+            NULL, :lid, CAST(:d AS date), 'production', :status,
+            :by, CASE WHEN :submitted THEN NOW() END, :notes
+        ) RETURNING id
+    """), {'lid': run['location_id'], 'd': run['production_date'],
+           'status': 'submitted' if submitted else 'draft', 'submitted': submitted,
+           'by': user, 'notes': f'End inventory from production run #{run["id"]}'}).fetchone().id
+    conn.execute(text("""
+        UPDATE production_runs SET inventory_submission_id = :inv WHERE id = :id
+    """), {'inv': inv_id, 'id': run['id']})
+    run['inventory_submission_id'] = inv_id
+    return inv_id
+
+
+def _inventory_product_ids(conn, inv_id):
+    rows = conn.execute(text("""
+        SELECT product_id FROM inventory_submission_counts WHERE inventory_submission_id = :id
+        UNION
+        SELECT product_id FROM inventory_counts WHERE inventory_submission_id = :id
+    """), {'id': inv_id}).fetchall()
+    return [r.product_id for r in rows]
+
+
+def _delete_run_inventory(conn, run):
+    """Remove a run's inventory; the day's count falls back to the next submitted one."""
+    inv_id = run['inventory_submission_id']
+    if not inv_id:
+        return
+    adopt_day_counts(conn, run['location_id'], run['production_date'])
+    pids = _inventory_product_ids(conn, inv_id)
+    conn.execute(text("DELETE FROM inventory_counts WHERE inventory_submission_id = :id"), {'id': inv_id})
+    conn.execute(text("DELETE FROM inventory_submissions WHERE id = :id"), {'id': inv_id})
+    refresh_day_counts(conn, run['location_id'], run['production_date'], pids)
 
 
 @bp.route('/production-runs/<int:run_id>/submit', methods=['POST'])
 @comm_required
 def submit_production_run(run_id):
-    """Submit a draft. It needs at least one amount above 0."""
+    """
+    Submit a draft: it needs at least one amount made above 0 or one End Inv.
+    Its End Inv inventory is submitted with it and becomes the commissary's
+    count for the day (latest submitted wins, product by product).
+    """
+    user = g.user.get('email')
     try:
         with get_engine().begin() as conn:
             run = _load_run(conn, run_id)
             if run['status'] != 'draft':
                 return jsonify({'error': 'This production run was already submitted'}), 400
-            n = conn.execute(text("""
+            made = conn.execute(text("""
                 SELECT COUNT(*) AS n FROM production_run_items WHERE run_id = :id AND quantity > 0
             """), {'id': run_id}).fetchone().n
-            if not n:
-                return jsonify({'error': 'Enter at least one amount before submitting'}), 400
+            inv_id = run['inventory_submission_id']
+            counted = conn.execute(text("""
+                SELECT COUNT(*) AS n FROM inventory_count_entries
+                WHERE inventory_submission_id = :sid AND superseded_at IS NULL
+            """), {'sid': inv_id}).fetchone().n if inv_id else 0
+            if not made and not counted:
+                return jsonify({'error': 'Enter at least one amount made or one End Inv before submitting'}), 400
+
             conn.execute(text("""
                 UPDATE production_runs
                 SET status = 'submitted', submitted_by = :by, submitted_at = NOW(), updated_at = NOW()
                 WHERE id = :id AND status = 'draft'
-            """), {'id': run_id, 'by': g.user.get('email')})
-        return jsonify({'status': 'ok'})
+            """), {'id': run_id, 'by': user})
+
+            if inv_id and counted:
+                adopt_day_counts(conn, run['location_id'], run['production_date'])
+                conn.execute(text("""
+                    UPDATE inventory_submissions
+                    SET status = 'submitted', submitted_by = :by, submitted_at = NOW(), updated_at = NOW()
+                    WHERE id = :id
+                """), {'id': inv_id, 'by': user})
+                sync_counts_from_entries(conn, inv_id, user, mark_changes=False)
+                refresh_day_counts(conn, run['location_id'], run['production_date'],
+                                   _inventory_product_ids(conn, inv_id))
+            elif inv_id:
+                _delete_run_inventory(conn, run)      # every End Inv was cleared: no empty inventory
+        return jsonify({'status': 'ok', 'end_counted': counted})
     except CommissaryAccessError as e:
         return _access_response(e)
 
@@ -525,13 +720,17 @@ def submit_production_run(run_id):
 @bp.route('/production-runs/<int:run_id>', methods=['DELETE'])
 @comm_required
 def delete_production_run(run_id):
-    """Drafts: anyone at that commissary. Submitted: PRODUCTION_EDIT_ROLES only."""
+    """
+    Drafts: anyone at that commissary. Submitted: PRODUCTION_EDIT_ROLES only.
+    The run's End Inv inventory goes with it.
+    """
     try:
         with get_engine().begin() as conn:
             run = _load_run(conn, run_id)
             if run['status'] == 'submitted' and not can_edit_submitted_production():
                 return jsonify({'error': 'Only an admin or commissary GM can delete a submitted '
                                          'production run'}), 403
+            _delete_run_inventory(conn, run)
             conn.execute(text("DELETE FROM production_runs WHERE id = :id"), {'id': run_id})
         return jsonify({'status': 'ok'})
     except CommissaryAccessError as e:

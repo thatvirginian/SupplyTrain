@@ -192,13 +192,13 @@ export default function InventoryHomePage() {
                   <tr key={s.id} className="row-link"
                     onClick={() => navigate(
                       s.status === 'draft'
-                        ? `/inventory/entry/${s.id}`
+                        ? (s.production_run_id ? `/production/run/${s.production_run_id}` : `/inventory/entry/${s.id}`)
                         : `/inventory/${s.id}`
                     )}>
                     <td>{formatDate(s.count_date)}</td>
                     {isAdmin && <td style={{ color: 'var(--text-secondary)' }}>{s.location_name}</td>}
                     <td style={{ color: 'var(--text-secondary)' }}>
-                      {s.template_name || (s.source === 'count_sheet' ? 'Count Sheet' : '—')}
+                      {s.template_name || (s.source === 'count_sheet' ? 'Count Sheet' : s.source === 'production' ? 'Production' : '—')}
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>{s.item_count}</td>
                     <td>
