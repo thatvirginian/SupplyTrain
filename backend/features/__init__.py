@@ -11,7 +11,8 @@
 #                    plus Unscheduled Orders (catering etc., placed by hand, no inventory)
 #   transfers        Store-to-store transfers (open -> sent -> received)
 #   usage            Usage Report (count to count, regular = actual - extra orders) + Par Check
-#   commissary       Comm Templates (and the commissary side of ordering)
+#   commissary       Comm Templates (and the commissary side of ordering),
+#                    Production Templates and Production (what the commissary made)
 #   inventory        Inv Templates (admin) and Inventories (staff)
 #
 # Files are named after what they handle, ending in _routes.py (HTTP endpoints).
@@ -37,6 +38,8 @@ def register_features(app):
     from features.transfers.transfer_routes import bp as transfer_routes_bp
     from features.usage.usage_routes import bp as usage_routes_bp
     from features.commissary.commissary_template_routes import bp as commissary_template_routes_bp
+    from features.commissary.production_template_routes import bp as production_template_routes_bp
+    from features.commissary.production_run_routes import bp as production_run_routes_bp
     from features.inventory.inventory_template_routes import bp as inventory_template_routes_bp
     from features.inventory.inventory_count_routes import bp as inventory_count_routes_bp
     from features.inventory.inventory_daily_routes import bp as inventory_daily_routes_bp
@@ -56,6 +59,8 @@ def register_features(app):
     app.register_blueprint(transfer_routes_bp)
     app.register_blueprint(usage_routes_bp)
     app.register_blueprint(commissary_template_routes_bp)
+    app.register_blueprint(production_template_routes_bp)
+    app.register_blueprint(production_run_routes_bp)
     app.register_blueprint(inventory_template_routes_bp)
     app.register_blueprint(inventory_count_routes_bp)
     app.register_blueprint(inventory_daily_routes_bp)

@@ -16,6 +16,7 @@
 #   comm_required            admin, commissary_gm, commissary
 #   comm_manage_required     admin, commissary_gm
 #   comm_item_edit_required  admin, gm, commissary_gm, commissary, store (route code narrows further)
+#   production_template_required  PRODUCTION_TEMPLATE_ROLES (admin, commissary_gm)
 #   any_role_required        any role including readonly
 # =============================================================================
 
@@ -43,6 +44,12 @@ STAFF_ROLES  = [ADMIN, GM, STORE, COMMISSARY, COMM_GM]  # any active user
 # edits and detail page corrections). Add a role here to allow it; nothing else
 # needs to change, the pages read the answer from the API (can_edit).
 INVENTORY_EDIT_ROLES = [ADMIN]
+
+# Commissary production: who may build production templates, and who may change
+# a SUBMITTED production run (corrections) or delete one. Recording production
+# itself is comm_required (admin, commissary_gm, commissary).
+PRODUCTION_TEMPLATE_ROLES = [ADMIN, COMM_GM]
+PRODUCTION_EDIT_ROLES     = [ADMIN, COMM_GM]
 
 
 def _has_role(*roles):
@@ -181,6 +188,21 @@ def inventory_edit_required(f):
     def decorated(*args, **kwargs):
         if not can_edit_submitted_inventory():
             return jsonify({'error': 'You do not have permission to change a submitted inventory'}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def can_edit_submitted_production():
+    """True when the current user may correct or delete a submitted production run."""
+    return _has_role(*PRODUCTION_EDIT_ROLES)
+
+
+def production_template_required(f):
+    """PRODUCTION_TEMPLATE_ROLES only (build / change production templates)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _has_role(*PRODUCTION_TEMPLATE_ROLES):
+            return jsonify({'error': 'Admin or commissary GM access required'}), 403
         return f(*args, **kwargs)
     return decorated
 

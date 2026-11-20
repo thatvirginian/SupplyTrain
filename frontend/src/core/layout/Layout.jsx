@@ -19,7 +19,12 @@ function NavItem({ to, label, icon, collapsed, end = false }) {
 }
 
 export default function Layout() {
-  const { user, isAdmin, isStoreUser, isManager } = useAuth()
+  const { user, isAdmin, isCommGM, isStoreUser, isCommUser, isManager } = useAuth()
+
+  // Commissary-only users (commissary, commissary GM, not admin or store) get
+  // their orders and inventories in the Commissary section instead of the
+  // store-side Inventory section.
+  const isCommissaryOnly = isCommUser && !isAdmin && !isStoreUser
 
   // Persist collapsed state in localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -55,7 +60,6 @@ export default function Layout() {
             {!collapsed && <div className="nav-section-label">Admin</div>}
             <NavItem to="/dashboard"             label="Dashboard"       icon="◈" collapsed={collapsed} />
             <NavItem to="/sheet-templates"       label="Order Templates" icon="☰" collapsed={collapsed} />
-            <NavItem to="/comm-order-templates"  label="Comm Templates"  icon="⊡" collapsed={collapsed} />
             <NavItem to="/products"              label="Products"        icon="⊞" collapsed={collapsed} />
             <NavItem to="/vendor-items"          label="Vendor Items"    icon="⊟" collapsed={collapsed} />
             <NavItem to="/mapping"               label="Toast Mapping"   icon="⇄" collapsed={collapsed} />
@@ -63,15 +67,34 @@ export default function Layout() {
             <NavItem to="/inventory-templates"   label="Inv Templates"   icon="⧈" collapsed={collapsed} />
           </>}
 
-          {!collapsed && <div className="nav-section-label">Inventory</div>}
-          <NavItem to="/count-sheets"   label="Order Sheet"    icon="≡" collapsed={collapsed} />
-          <NavItem to="/orders/history" label="Order History"  icon="◷" collapsed={collapsed} />
-          {isStoreUser && (
-            <NavItem to="/orders/new"   label="Unscheduled Order" icon="✚" collapsed={collapsed} />
-          )}
-          <NavItem to="/transfers"      label="Transfers"      icon="⇆" collapsed={collapsed} />
-          <NavItem to="/inventory"      label="Inventories"    icon="⧉" collapsed={collapsed} />
-          <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
+          {isCommUser && <>
+            {!collapsed && <div className="nav-section-label">Commissary</div>}
+            <NavItem to="/production"            label="Production"      icon="⚒" collapsed={collapsed} />
+            {(isAdmin || isCommGM) && (
+              <NavItem to="/production-templates" label="Prod Templates" icon="⊠" collapsed={collapsed} />
+            )}
+            {isAdmin && (
+              <NavItem to="/comm-order-templates" label="Comm Templates" icon="⊡" collapsed={collapsed} />
+            )}
+            {isCommissaryOnly && <>
+              <NavItem to="/orders/history"  label="Order History"   icon="◷" collapsed={collapsed} />
+              <NavItem to="/transfers"       label="Transfers"       icon="⇆" collapsed={collapsed} />
+              <NavItem to="/inventory"       label="Inventories"     icon="⧉" collapsed={collapsed} />
+              <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
+            </>}
+          </>}
+
+          {!isCommissaryOnly && <>
+            {!collapsed && <div className="nav-section-label">Inventory</div>}
+            <NavItem to="/count-sheets"   label="Order Sheet"    icon="≡" collapsed={collapsed} />
+            <NavItem to="/orders/history" label="Order History"  icon="◷" collapsed={collapsed} />
+            {isStoreUser && (
+              <NavItem to="/orders/new"   label="Unscheduled Order" icon="✚" collapsed={collapsed} />
+            )}
+            <NavItem to="/transfers"      label="Transfers"      icon="⇆" collapsed={collapsed} />
+            <NavItem to="/inventory"      label="Inventories"    icon="⧉" collapsed={collapsed} />
+            <NavItem to="/inventory/daily" label="Daily Inventory" icon="▦" collapsed={collapsed} />
+          </>}
 
           {isManager && <>
             {!collapsed && <div className="nav-section-label">Usage</div>}

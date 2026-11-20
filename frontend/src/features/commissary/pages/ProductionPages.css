@@ -1,0 +1,49 @@
+/* Production pages (commissary): shared by ProductionHomePage, ProductionRunPage
+   and ProductionTemplateDetailPage. */
+
+/* Quantities use the mono font, like every other number in the app */
+.prod-num {
+  font-family: var(--font-mono);
+  text-align:  right;
+  white-space: nowrap;
+}
+
+.prod-muted { color: var(--text-muted); }
+
+.save-confirm {
+  font-size: 0.75rem;
+  color:     var(--success);
+}
+
+/* Run sheet: "earlier today" and correction notes under an item */
+.prod-earlier {
+  font-size:  0.7rem;
+  color:      var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+.prod-was {
+  font-size:   0.7rem;
+  color:       var(--warning);
+  font-family: var(--font-mono);
+}
+
+.prod-banner {
+  background:    rgba(217, 119, 6, 0.1);
+  border-bottom: 1px solid rgba(217, 119, 6, 0.3);
+  padding:       0.5rem 1rem;
+  font-size:     0.75rem;
+  color:         var(--warning);
+  text-align:    center;
+}
+
+.prod-notes {
+  display:   flex;
+  gap:       0.5rem;
+  align-items: center;
+  padding:   0.5rem 1rem;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-surface);
+}
+
+.prod-notes .input { flex: 1; }

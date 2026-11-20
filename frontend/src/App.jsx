@@ -17,6 +17,10 @@ import OrderSheetPage     from './features/order_sheets/pages/OrderSheetPage.jsx
 import ParLevelsPage from './features/par_levels/pages/ParLevelsPage.jsx'
 import CommissaryTemplateListPage      from './features/commissary/pages/CommissaryTemplateListPage.jsx'
 import CommissaryTemplateDetailPage from './features/commissary/pages/CommissaryTemplateDetailPage.jsx'
+import ProductionHomePage           from './features/commissary/pages/ProductionHomePage.jsx'
+import ProductionRunPage            from './features/commissary/pages/ProductionRunPage.jsx'
+import ProductionTemplateListPage   from './features/commissary/pages/ProductionTemplateListPage.jsx'
+import ProductionTemplateDetailPage from './features/commissary/pages/ProductionTemplateDetailPage.jsx'
 import InventoryHomePage           from './features/inventory/pages/InventoryHomePage.jsx'
 import InventoryHistoryPage        from './features/inventory/pages/InventoryHistoryPage.jsx'
 import InventoryDetailPage         from './features/inventory/pages/InventoryDetailPage.jsx'
@@ -107,7 +111,7 @@ function App() {
               isAdmin || isGM
                 ? <Navigate to="/dashboard" replace />
                 : isCommUser
-                  ? <Navigate to="/orders/history" replace />
+                  ? <Navigate to="/production" replace />
                   : <Navigate to="/count-sheets" replace />
             } />
 
@@ -146,6 +150,16 @@ function App() {
               <Route path="transfers"                element={<TransferListPage />} />
               <Route path="transfers/new"            element={<TransferNewPage />} />
               <Route path="transfers/:id"            element={<TransferDetailPage />} />
+            </>}
+
+            {/* Commissary: production (admin, commissary gm, commissary staff) */}
+            {isCommUser && <>
+              <Route path="production"                element={<ProductionHomePage />} />
+              <Route path="production/run/:runId"     element={<ProductionRunPage />} />
+            </>}
+            {(isAdmin || isCommGM) && <>
+              <Route path="production-templates"      element={<ProductionTemplateListPage />} />
+              <Route path="production-templates/:id"  element={<ProductionTemplateDetailPage />} />
             </>}
 
             {/* Usage: managers (admin, gm, commissary gm) */}
