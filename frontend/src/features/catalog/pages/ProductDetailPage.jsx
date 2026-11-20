@@ -138,8 +138,8 @@ export default function ProductDetailPage() {
       vendor_code:    v.vendor_code    || '',
       packaging:      v.packaging      || '',
       order_unit_id:  v.order_unit_id  ? String(v.order_unit_id) : '',
-      order_quantity: v.order_quantity || '',
-      price:          v.price          || '',
+      order_quantity: v.order_quantity ?? '',
+      price:          v.price          ?? '',
       notes:          v.notes          || '',
     })
     setVendorEditError(null)
@@ -464,9 +464,9 @@ export default function ProductDetailPage() {
                     {v.vendor_code && <div className="vendor-code">{v.vendor_code}</div>}
                     {v.packaging   && <div className="vendor-meta">{v.packaging}</div>}
                     <div className="vendor-meta">
-                      {v.order_quantity && `${v.order_quantity} `}
+                      {v.order_quantity != null && `${v.order_quantity} `}
                       {v.order_unit}
-                      {v.price && ` · $${parseFloat(v.price).toFixed(2)}`}
+                      {v.price != null && ` · $${parseFloat(v.price).toFixed(2)}`}
                     </div>
                   </div>
                 ))}
@@ -491,9 +491,9 @@ export default function ProductDetailPage() {
                         {v.vendor_code && <div className="vendor-code">{v.vendor_code}</div>}
                         {v.packaging   && <div className="vendor-meta">{v.packaging}</div>}
                         <div className="vendor-meta">
-                          {v.order_quantity && `${v.order_quantity} `}
+                          {v.order_quantity != null && `${v.order_quantity} `}
                           {v.order_unit}
-                          {v.price && ` · $${parseFloat(v.price).toFixed(2)}`}
+                          {v.price != null && ` · $${parseFloat(v.price).toFixed(2)}`}
                         </div>
                       </div>
                     ))}

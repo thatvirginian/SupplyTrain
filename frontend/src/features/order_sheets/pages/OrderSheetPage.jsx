@@ -117,7 +117,8 @@ export default function OrderSheetPage() {
       return { qty: item.saved_order.qty, unit: item.saved_order.unit_name, needsConversion: false }
     }
     const par = item.par
-    if (!par || !par.par_qty) return { qty: null, unit: null, needsConversion: false }
+    // A par of 0 is a real par (order nothing); only a missing par skips the calculation
+    if (!par || par.par_qty == null) return { qty: null, unit: null, needsConversion: false }
 
     const countUnitIds = (item.count_units || []).map(cu => cu.unit_id)
     const allMatchPar  = countUnitIds.every(id => id === par.unit_id)

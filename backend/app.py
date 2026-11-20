@@ -15,10 +15,23 @@ import json
 import logging
 import os
 import datetime
+from decimal import Decimal
 
 class ISODateJSONProvider(DefaultJSONProvider):
-    """Serialize date/datetime as ISO 8601 strings instead of RFC 2822."""
+    """
+    Serialize date/datetime as ISO 8601 strings instead of RFC 2822, and
+    numeric columns (Decimal) as JSON numbers.
+
+    Quantities are stored as numeric(12,4), so Postgres returns 2 as
+    Decimal('2.0000'). Flask's default turns that into the text "2.0000",
+    which pages showed as-is. Sending a number (2, 1.5, 0.3333) shows cleanly
+    everywhere. Storage keeps its 4 places; only the JSON changes.
+    """
     def default(self, obj):
+        if isinstance(obj, Decimal):
+            if not obj.is_finite():
+                return None
+            return int(obj) if obj == obj.to_integral_value() else float(obj)
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
         if isinstance(obj, datetime.date):

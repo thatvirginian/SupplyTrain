@@ -166,8 +166,8 @@ export default function VendorItemsPage() {
       vendor_code:    item.vendor_code || '',
       packaging:      item.packaging || '',
       order_unit_id:  item.order_unit_id ? String(item.order_unit_id) : '',
-      order_quantity: item.order_quantity || '',
-      price:          item.price || '',
+      order_quantity: item.order_quantity ?? '',
+      price:          item.price ?? '',
       notes:          item.notes || '',
     })
     // Pre-populate linked product if it exists
@@ -293,7 +293,7 @@ export default function VendorItemsPage() {
                       {item.packaging || '—'}
                     </td>
                     <td style={{ color: 'var(--text-secondary)' }}>
-                      {item.price ? `$${parseFloat(item.price).toFixed(2)}` : '—'}
+                      {item.price != null ? `$${parseFloat(item.price).toFixed(2)}` : '—'}
                     </td>
                     <td>
                       {item.product_id ? (
