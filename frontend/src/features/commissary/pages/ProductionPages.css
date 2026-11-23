@@ -170,9 +170,8 @@
 /* Print: the sheet alone, landscape, one page */
 .plan-print-name { display: none; }
 
-/* Named page: only this sheet prints landscape, other pages keep their own setup */
-@page plan-sheet { size: landscape; margin: 0.5in; }
-.plan-page { page: plan-sheet; }
+/* The Print button opens a PDF from the server (production_plan_pdf.py).
+   These rules only tidy up a browser print (Ctrl+P) of the page. */
 
 @media print {
   .no-print, .sidebar { display: none !important; }

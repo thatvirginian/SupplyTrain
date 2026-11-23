@@ -29,7 +29,8 @@
 # one commissary that is the same thing).
 #
 # Endpoints in this file:
-#   GET  /api/production-plan     production_plan
+#   GET  /api/production-plan       production_plan
+#   GET  /api/production-plan/pdf   production_plan_pdf  (same plan as a PDF)
 #        params: template_id, date (default today), location_id (admins)
 # =============================================================================
 
@@ -37,7 +38,8 @@ from datetime import datetime
 import os
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
+import io
 from sqlalchemy import text
 
 from core.auth import comm_required
@@ -64,14 +66,35 @@ def _num(v):
 @bp.route('/production-plan', methods=['GET'])
 @comm_required
 def production_plan():
+    data, err = _plan_from_request()
+    if err:
+        return jsonify({'error': err[0]}), err[1]
+    return jsonify(data)
+
+
+@bp.route('/production-plan/pdf', methods=['GET'])
+@comm_required
+def production_plan_pdf():
+    data, err = _plan_from_request()
+    if err:
+        return jsonify({'error': err[0]}), err[1]
+    from features.commissary.production_plan_pdf import build_production_plan_pdf
+    pdf = build_production_plan_pdf(data)
+    name = ''.join(ch if ch.isalnum() else '-' for ch in data['template_name']).strip('-').lower()
+    return send_file(io.BytesIO(pdf), mimetype='application/pdf', as_attachment=False,
+                     download_name=f"production-plan-{name}-{data['date']}.pdf")
+
+
+def _plan_from_request():
+    """The plan for the request's template / date / commissary: (data, None) or (None, (message, status))."""
     template_id = request.args.get('template_id', type=int)
     plan_date   = request.args.get('date') or _today_local()
     if not template_id:
-        return jsonify({'error': 'template_id is required'}), 400
+        return None, ('template_id is required', 400)
     try:
         datetime.strptime(plan_date, '%Y-%m-%d')
     except ValueError:
-        return jsonify({'error': 'Bad date'}), 400
+        return None, ('Bad date', 400)
 
     try:
         with get_engine().connect() as conn:
@@ -82,11 +105,15 @@ def production_plan():
                 WHERE template_id = :tid AND location_id = :lid
             """), {'tid': template_id, 'lid': location_id}).fetchone()
             if not assigned:
-                return jsonify({'error': 'That production template is not assigned to this commissary'}), 400
+                return None, ('That production template is not assigned to this commissary', 400)
+
+            location_name = conn.execute(text("""
+                SELECT location_name FROM locations WHERE store_guid::text = :lid
+            """), {'lid': location_id}).scalar()
 
             template = load_production_template(conn, template_id)
             if not template:
-                return jsonify({'error': 'Template not found'}), 404
+                return None, ('Template not found', 404)
 
             items = [i for s in template['sections'] for i in s['items']]
             product_ids = list({i['product_id'] for i in items})
@@ -144,7 +171,7 @@ def production_plan():
             conv = load_conversion_map(conn, product_ids, unit_ids,
                                        {b for b in base_units.values() if b})
     except CommissaryAccessError as e:
-        return jsonify({'error': str(e)}), e.status
+        return None, (str(e), e.status)
 
     def to_base(qty, unit_id, pid):
         if qty is None:
@@ -226,11 +253,12 @@ def production_plan():
             })
         sections.append({'id': s['id'], 'name': s['name'], 'items': rows})
 
-    return jsonify({
+    return {
         'location_id':   location_id,
+        'location_name': location_name,
         'date':          plan_date,
         'template_id':   template_id,
         'template_name': template['name'],
         'stores':        stores,
         'sections':      sections,
-    })
+    }, None

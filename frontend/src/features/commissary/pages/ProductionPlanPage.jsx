@@ -8,10 +8,10 @@ import './ProductionPages.css'
 
 // Production Plan (commissary): the paper "Daily Prep Production" sheet.
 // For one production template and one delivery date: each store's count (INV)
-// and order (ORD) from the order sheets behind its commissary order, and the
+// and order (ORD) from the order sheets behind its commissary order, the
 // totals, and the commissary's own latest count before that day (Comm Inv).
-// Read only; prints landscape on one page. What was made and the End
-// Inv are entered on production runs (Production page), not here.
+// Read only. Print PDF opens the same plan as a PDF from the server. What was
+// made and the End Inv are entered on production runs (Production page).
 
 function shiftDate(dateStr, days) {
   const d = parseLocalDate(dateStr)
@@ -167,7 +167,14 @@ export default function ProductionPlanPage() {
           {date !== todayLocal() && (
             <button className="btn btn-secondary btn-sm" onClick={() => setDate(todayLocal())}>Today</button>
           )}
-          <button className="btn btn-secondary btn-sm" onClick={() => window.print()} disabled={!plan}>Print</button>
+          <button className="btn btn-secondary btn-sm" disabled={!plan}
+            onClick={() => {
+              const q = new URLSearchParams({ template_id: templateId, date,
+                ...(isAdmin ? { location_id: locationId } : {}) })
+              window.open(`/api/production-plan/pdf?${q}`, '_blank')
+            }}>
+            Print PDF
+          </button>
         </div>
       </div>
 
