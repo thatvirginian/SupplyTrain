@@ -84,7 +84,7 @@
 .plan-key-cell,
 .plan-split {
   position:   relative;
-  background: linear-gradient(to top right,
+  background: linear-gradient(to bottom right,
               transparent calc(50% - 0.5px), var(--border) calc(50% - 0.5px),
               var(--border) calc(50% + 0.5px), transparent calc(50% + 0.5px));
   -webkit-print-color-adjust: exact;
@@ -184,7 +184,7 @@
   .plan-wrap { overflow: visible; }
   .plan-table th, .plan-table td { border-color: #999; }
   .plan-store-link { color: #000; }
-  .plan-split { background: linear-gradient(to top right,
+  .plan-split { background: linear-gradient(to bottom right,
                 transparent calc(50% - 0.5px), #999 calc(50% - 0.5px),
                 #999 calc(50% + 0.5px), transparent calc(50% + 0.5px)); }
   .plan-split-empty { background: none; }
