@@ -70,6 +70,7 @@ export default function Layout() {
           {isCommUser && <>
             {!collapsed && <div className="nav-section-label">Commissary</div>}
             <NavItem to="/production"            label="Production"      icon="⚒" collapsed={collapsed} />
+            <NavItem to="/production-plan"       label="Production Plan" icon="▤" collapsed={collapsed} />
             {(isAdmin || isCommGM) && (
               <NavItem to="/production-templates" label="Prod Templates" icon="⊠" collapsed={collapsed} />
             )}

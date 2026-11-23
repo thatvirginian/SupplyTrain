@@ -66,3 +66,108 @@
   border-bottom: 1px solid var(--border-light);
   background:  var(--bg-surface);
 }
+
+/* ── Production Plan: store INV / ORD split cells, like the paper sheet ──── */
+.plan-page { max-width: none; }
+
+.plan-head { align-items: flex-start; }
+.plan-head-sub { font-size: 0.75rem; color: var(--text-muted); }
+
+.plan-key {
+  display:     flex;
+  align-items: center;
+  gap:         0.5rem;
+  font-size:   0.7rem;
+  color:       var(--text-muted);
+}
+
+.plan-key-cell,
+.plan-split {
+  position:   relative;
+  background: linear-gradient(to top right,
+              transparent calc(50% - 0.5px), var(--border) calc(50% - 0.5px),
+              var(--border) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+  -webkit-print-color-adjust: exact;
+  print-color-adjust:         exact;
+}
+
+.plan-key-cell {
+  display: inline-block;
+  width:   44px;
+  height:  30px;
+  border:  1px solid var(--border);
+}
+
+.plan-table th,
+.plan-table td { border: 1px solid var(--border-light); }
+
+.plan-table .plan-split {
+  width:     58px;
+  min-width: 58px;
+  height:    40px;
+  padding:   0;
+}
+
+.plan-split-empty { background: none; }
+.plan-split-total { background-color: var(--bg-surface); }
+
+.plan-inv,
+.plan-ord {
+  position:    absolute;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.plan-inv { top: 4px;    left: 6px;  font-size: 0.75rem; color: var(--text-muted); }
+.plan-ord { bottom: 4px; right: 6px; font-size: 0.9rem;  font-weight: 600; color: var(--text-primary); }
+.plan-key-cell .plan-inv,
+.plan-key-cell .plan-ord { font-size: 0.55rem; }
+
+.plan-store { text-align: center; }
+.plan-route {
+  text-align:     center;
+  font-size:      0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-store-link {
+  background: none;
+  border:     none;
+  padding:    0;
+  font:       inherit;
+  color:      var(--accent);
+  cursor:     pointer;
+}
+.plan-store-link:hover { text-decoration: underline; }
+
+.plan-product { font-weight: 500; white-space: nowrap; }
+
+.plan-section-row td {
+  background:     var(--bg-surface);
+  font-size:      0.7rem;
+  font-weight:    600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color:          var(--text-secondary);
+}
+
+.plan-foot {
+  padding:   0.6rem 1.25rem;
+  font-size: 0.7rem;
+  color:     var(--text-muted);
+}
+
+@media print {
+  .sidebar { display: none !important; }
+  .app-shell, .main-content { display: block; height: auto; overflow: visible; }
+  .plan-page { padding: 0; }
+  .plan-card { border: none; box-shadow: none; }
+  .plan-wrap { overflow: visible; }
+  .plan-table th, .plan-table td { border-color: #999; }
+  .plan-store-link { color: #000; }
+  .plan-split { background: linear-gradient(to top right,
+                transparent calc(50% - 0.5px), #999 calc(50% - 0.5px),
+                #999 calc(50% + 0.5px), transparent calc(50% + 0.5px)); }
+  .plan-split-empty { background: none; }
+}

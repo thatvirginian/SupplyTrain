@@ -19,6 +19,7 @@ import CommissaryTemplateListPage      from './features/commissary/pages/Commiss
 import CommissaryTemplateDetailPage from './features/commissary/pages/CommissaryTemplateDetailPage.jsx'
 import ProductionHomePage           from './features/commissary/pages/ProductionHomePage.jsx'
 import ProductionRunPage            from './features/commissary/pages/ProductionRunPage.jsx'
+import ProductionPlanPage           from './features/commissary/pages/ProductionPlanPage.jsx'
 import ProductionTemplateListPage   from './features/commissary/pages/ProductionTemplateListPage.jsx'
 import ProductionTemplateDetailPage from './features/commissary/pages/ProductionTemplateDetailPage.jsx'
 import InventoryHomePage           from './features/inventory/pages/InventoryHomePage.jsx'
@@ -156,6 +157,7 @@ function App() {
             {isCommUser && <>
               <Route path="production"                element={<ProductionHomePage />} />
               <Route path="production/run/:runId"     element={<ProductionRunPage />} />
+              <Route path="production-plan"           element={<ProductionPlanPage />} />
             </>}
             {(isAdmin || isCommGM) && <>
               <Route path="production-templates"      element={<ProductionTemplateListPage />} />
