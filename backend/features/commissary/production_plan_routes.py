@@ -19,10 +19,10 @@
 #     ORD  what the store ordered (original_quantity, before any commissary
 #          change), summed over the store's orders that day.
 #   Totals per product: INV and ORD over all stores.
-#   Made     the day's SUBMITTED production runs at this commissary (all
-#            templates), like the Production page.
-#   End Inv  the commissary's count for the day (inventory_counts: the latest
-#            submitted count wins, so a run's End Inv shows here).
+#   Comm Inv  the commissary's own latest count BEFORE the plan date
+#             (inventory_counts, any source: a production run's End Inv or a
+#             commissary inventory), with the date it was counted.
+#   What was made and the End Inv are entered on production runs, not here.
 #
 # Read only. Cancelled orders are left out. Any commissary order counts (there
 # is no link yet between a commissary vendor and a commissary location; with
@@ -127,32 +127,19 @@ def production_plan():
                 GROUP BY po.location_id, l.location_name, l.abbreviation, l.route
             """), {'d': plan_date, 'lid': location_id}).mappings().all()
 
-            # Made today (submitted runs, any template) and the day's End Inv
-            made = {r.product_id: (_num(r.base_total), r.base_unit_id) for r in conn.execute(text("""
-                SELECT pri.product_id, pri.base_unit_id, SUM(pri.base_quantity) AS base_total
-                FROM production_runs pr
-                JOIN production_run_items pri ON pri.run_id = pr.id
-                WHERE pr.location_id = :lid AND pr.status = 'submitted'
-                  AND pr.production_date = CAST(:d AS date)
-                  AND pri.product_id = ANY(:pids)
-                GROUP BY pri.product_id, pri.base_unit_id
-            """), {'lid': location_id, 'd': plan_date, 'pids': product_ids or [0]}).fetchall()}
-            end_inv = {r.product_id: (_num(r.base_quantity), r.base_unit_id) for r in conn.execute(text("""
-                SELECT product_id, base_quantity, base_unit_id
+            # The commissary's latest count before the plan date, per product
+            comm_inv = {r.product_id: (_num(r.base_quantity), r.base_unit_id, str(r.count_date)) for r in conn.execute(text("""
+                SELECT DISTINCT ON (product_id) product_id, base_quantity, base_unit_id, count_date
                 FROM inventory_counts
-                WHERE location_id = :lid AND count_date = CAST(:d AS date)
-                  AND product_id = ANY(:pids)
+                WHERE location_id = :lid AND count_date < CAST(:d AS date)
+                  AND product_id = ANY(:pids) AND base_quantity IS NOT NULL
+                ORDER BY product_id, count_date DESC
             """), {'lid': location_id, 'd': plan_date, 'pids': product_ids or [0]}).fetchall()}
-            drafts = conn.execute(text("""
-                SELECT COUNT(*) FROM production_runs
-                WHERE location_id = :lid AND status = 'draft'
-                  AND production_date = CAST(:d AS date)
-            """), {'lid': location_id, 'd': plan_date}).scalar()
 
             base_units = {i['product_id']: i['base_unit_id'] for i in items}
             unit_ids = ({i['unit_id'] for i in items}
                         | {r['order_unit_id'] for r in lines} | {r['on_hand_unit_id'] for r in lines}
-                        | {v[1] for v in made.values()} | {v[1] for v in end_inv.values()})
+                        | {v[1] for v in comm_inv.values()})
             unit_ids.discard(None)
             conv = load_conversion_map(conn, product_ids, unit_ids,
                                        {b for b in base_units.values() if b})
@@ -198,12 +185,6 @@ def production_plan():
         f = base_factor(conv, item['unit_id'], item['base_unit_id'], item['product_id'])
         return None if not f else round(base_qty / f, 2)
 
-    def from_pair(pair, item):
-        if not pair:
-            return None
-        qty, unit_id = pair
-        return shown(to_base(qty, unit_id, item['product_id']), item)
-
     sections = []
     for s in template['sections']:
         rows = []
@@ -224,6 +205,13 @@ def production_plan():
                     tot_inv += inv; any_inv = True
                 if ord_ is not None:
                     tot_ord += ord_; any_ord = True
+            comm_qty = comm_date = None
+            ci = comm_inv.get(i['product_id'])
+            if ci:
+                comm_date = ci[2]
+                comm_qty = shown(to_base(ci[0], ci[1], i['product_id']), i)
+                if comm_qty is None:
+                    missing = True
             rows.append({
                 'product_id':   i['product_id'],
                 'product_name': i['product_name'],
@@ -232,8 +220,8 @@ def production_plan():
                 'stores':       per_store,
                 'total_inv':    round(tot_inv, 2) if any_inv else None,
                 'total_ord':    round(tot_ord, 2) if any_ord else None,
-                'made':         from_pair(made.get(i['product_id']), i),
-                'end_inv':      from_pair(end_inv.get(i['product_id']), i),
+                'comm_inv':     comm_qty,
+                'comm_inv_date': comm_date,
                 'missing_conversion': missing,
             })
         sections.append({'id': s['id'], 'name': s['name'], 'items': rows})
@@ -245,5 +233,4 @@ def production_plan():
         'template_name': template['name'],
         'stores':        stores,
         'sections':      sections,
-        'draft_runs':    drafts,
     })

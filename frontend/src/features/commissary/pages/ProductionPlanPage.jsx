@@ -8,14 +8,20 @@ import './ProductionPages.css'
 
 // Production Plan (commissary): the paper "Daily Prep Production" sheet.
 // For one production template and one delivery date: each store's count (INV)
-// and order (ORD) from the order sheets behind its commissary order, the
-// totals, and what the commissary made and has left that day (from the day's
-// submitted production runs and End Inv). Read only; prints on one page.
+// and order (ORD) from the order sheets behind its commissary order, and the
+// totals, and the commissary's own latest count before that day (Comm Inv).
+// Read only; prints landscape on one page. What was made and the End
+// Inv are entered on production runs (Production page), not here.
 
 function shiftDate(dateStr, days) {
   const d = parseLocalDate(dateStr)
   d.setDate(d.getDate() + days)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function shortDate(d) {
+  const x = parseLocalDate(d)
+  return x ? `${x.getMonth() + 1}/${x.getDate()}` : ''
 }
 
 function fmt(v) {
@@ -117,6 +123,11 @@ export default function ProductionPlanPage() {
   }
   const showRoutes = routeGroups.some(g => g.route)
 
+  // Comm Inv: the date in the header when every product was counted the same day
+  const commDates = new Set((plan?.sections || []).flatMap(s => s.items)
+    .map(i => i.comm_inv_date).filter(Boolean))
+  const commDate = commDates.size === 1 ? [...commDates][0] : null
+
   if (commissaries && commissaries.length === 0) {
     return (
       <div className="page">
@@ -170,19 +181,13 @@ export default function ProductionPlanPage() {
               <span className="plan-head-sub">
                 Delivery {formatDate(plan.date)}{commissary ? ` · ${commissary.location_name}` : ''}
               </span>
+              <span className="plan-print-name">Name: ______________________</span>
             </div>
             <span className="plan-key">
               <span className="plan-key-cell"><span className="plan-inv">INV</span><span className="plan-ord">ORD</span></span>
               store count / order
             </span>
           </div>
-
-          {plan.draft_runs > 0 && (
-            <div className="alert alert-warning no-print" style={{ margin: '0.75rem 1.25rem 0' }}>
-              {plan.draft_runs} draft production {plan.draft_runs === 1 ? 'run is' : 'runs are'} not
-              submitted yet, so Made and End Inv leave {plan.draft_runs === 1 ? 'it' : 'them'} out.
-            </div>
-          )}
 
           {stores.length === 0 && (
             <div className="card-body" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
@@ -199,7 +204,7 @@ export default function ProductionPlanPage() {
                     {routeGroups.map((g, i) => (
                       <th key={i} colSpan={g.span} className="plan-route">{g.route || 'No route'}</th>
                     ))}
-                    <th colSpan={3}></th>
+                    <th colSpan={2}></th>
                   </tr>
                 )}
                 <tr>
@@ -216,21 +221,23 @@ export default function ProductionPlanPage() {
                     </th>
                   ))}
                   <th className="plan-store">Total</th>
-                  <th className="prod-num">Made</th>
-                  <th className="prod-num">End Inv</th>
+                  <th className="prod-num plan-comm" title="The commissary's latest count before this day">
+                    Comm Inv
+                    {commDate && <span className="plan-comm-date">{shortDate(commDate)}</span>}
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {plan.sections.map(sec => (
                   <SectionRows key={sec.id} sec={sec} stores={stores}
-                    showName={plan.sections.length > 1} />
+                    showName={plan.sections.length > 1} commDate={commDate} />
                 ))}
               </tbody>
             </table>
           </div>
           <div className="plan-foot">
             INV is what the store counted on its order sheet and ORD what it ordered, both shown in the
-            template's unit. Made and End Inv come from this day's submitted production runs.
+            template's unit. Comm Inv is the commissary's latest count before this day.
           </div>
         </div>
       )}
@@ -239,11 +246,11 @@ export default function ProductionPlanPage() {
   )
 }
 
-function SectionRows({ sec, stores, showName }) {
+function SectionRows({ sec, stores, showName, commDate }) {
   return <>
     {showName && (
       <tr className="plan-section-row">
-        <td colSpan={stores.length + 5}>{sec.name}</td>
+        <td colSpan={stores.length + 4}>{sec.name}</td>
       </tr>
     )}
     {sec.items.map(i => (
@@ -263,8 +270,12 @@ function SectionRows({ sec, stores, showName }) {
           return <SplitCell key={s.location_id} inv={c?.inv} ord={c?.ord} />
         })}
         <SplitCell inv={i.total_inv} ord={i.total_ord} total />
-        <td className="prod-num">{fmt(i.made)}</td>
-        <td className="prod-num">{fmt(i.end_inv)}</td>
+        <td className="prod-num plan-comm">
+          {fmt(i.comm_inv)}
+          {i.comm_inv_date && i.comm_inv_date !== commDate && (
+            <span className="plan-comm-date">{shortDate(i.comm_inv_date)}</span>
+          )}
+        </td>
       </tr>
     ))}
   </>

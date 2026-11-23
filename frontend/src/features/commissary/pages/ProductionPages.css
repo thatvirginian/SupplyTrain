@@ -143,6 +143,15 @@
 
 .plan-product { font-weight: 500; white-space: nowrap; }
 
+.plan-comm { width: 84px; font-weight: 600; }
+.plan-comm-date {
+  display:     block;
+  font-size:   0.65rem;
+  font-weight: 400;
+  color:       var(--text-muted);
+  letter-spacing: 0;
+}
+
 .plan-section-row td {
   background:     var(--bg-surface);
   font-size:      0.7rem;
@@ -158,8 +167,17 @@
   color:     var(--text-muted);
 }
 
+/* Print: the sheet alone, landscape, one page */
+.plan-print-name { display: none; }
+
+/* Named page: only this sheet prints landscape, other pages keep their own setup */
+@page plan-sheet { size: landscape; margin: 0.5in; }
+.plan-page { page: plan-sheet; }
+
 @media print {
-  .sidebar { display: none !important; }
+  .no-print, .sidebar { display: none !important; }
+  .plan-print-name { display: block; font-size: 0.8rem; margin-top: 0.35rem; }
+  .plan-head-sub { color: #000; }
   .app-shell, .main-content { display: block; height: auto; overflow: visible; }
   .plan-page { padding: 0; }
   .plan-card { border: none; box-shadow: none; }
@@ -170,4 +188,9 @@
                 transparent calc(50% - 0.5px), #999 calc(50% - 0.5px),
                 #999 calc(50% + 0.5px), transparent calc(50% + 0.5px)); }
   .plan-split-empty { background: none; }
+  .plan-table { width: 100%; }
+  .plan-table tr { break-inside: avoid; }
+  .plan-table thead { display: table-header-group; }
+  .plan-ord { color: #000; }
+  .plan-inv { color: #444; }
 }
