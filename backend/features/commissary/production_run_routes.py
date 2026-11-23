@@ -38,6 +38,10 @@
 #   POST    /api/production-runs/<int:run_id>/submit     submit_production_run
 #   DELETE  /api/production-runs/<int:run_id>            delete_production_run
 #   GET     /api/production-daily                        production_daily
+#
+# Signing (core/operators.py): submitting a run and correcting a submitted run
+# are signed by the person signed in on the device (or the personal login).
+# On a shared login with nobody signed in they answer 428 operator_required.
 # =============================================================================
 
 from datetime import datetime
@@ -59,6 +63,7 @@ from features.commissary.commissary_access import (
     CommissaryAccessError, list_commissary_locations, resolve_commissary_location,
 )
 from features.commissary.production_template_routes import load_production_template
+from core.operators import signer_for, record_signoff, OperatorRequired, operator_required_response
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,10 @@ def list_production_runs():
                        pr.location_id, l.location_name,
                        pr.production_date, pr.status, pr.notes,
                        pr.created_by, pr.created_at, pr.submitted_by, pr.submitted_at,
+                       (SELECT os.signer_name FROM operator_signoffs os
+                        WHERE os.entity_type = 'production_run' AND os.entity_id = pr.id
+                          AND os.action = 'production_run.submit'
+                        ORDER BY os.signed_at DESC LIMIT 1) AS submitted_by_name,
                        (SELECT COUNT(*) FROM production_run_items pri
                         WHERE pri.run_id = pr.id AND pri.quantity <> 0) AS item_count,
                        (SELECT COUNT(*) FROM production_run_items pri
@@ -385,6 +394,16 @@ def get_production_run(run_id):
                                   for r in rows],
                 }
 
+            # Who signed this run (submit, corrections), newest first
+            run['signoffs'] = [dict(r) for r in conn.execute(text("""
+                SELECT action, signer_name, toast_employee_guid, login_email, note, signed_at
+                FROM operator_signoffs
+                WHERE entity_type = 'production_run' AND entity_id = :id
+                ORDER BY signed_at DESC, id DESC
+            """), {'id': run_id}).mappings().all()]
+            sub = next((s for s in run['signoffs'] if s['action'] == 'production_run.submit'), None)
+            run['submitted_by_name'] = sub['signer_name'] if sub else None
+
         run['sections']   = sections
         run['lines']      = lines
         run['end_counted'] = len({e['product_id'] for e in end_lines})
@@ -558,6 +577,13 @@ def save_production_run(run_id):
                                          'Nothing was saved.',
                                 'missing_conversions': [dict(n) for n in names]}), 400
 
+            # A change to a SUBMITTED run is a correction: it is signed (who changed it).
+            who = user
+            signer = None
+            if submitted and (writes or removes or end_write or end_remove):
+                signer = signer_for(conn, run['location_id'])
+                who = signer['name']
+
             # ── Write Made ─────────────────────────────────────────────────────
             if removes:
                 conn.execute(text("""
@@ -581,7 +607,7 @@ def save_production_run(run_id):
                             corrected_at      = EXCLUDED.corrected_at,
                             correction_notes  = COALESCE(EXCLUDED.correction_notes,
                                                          production_run_items.correction_notes)
-                    """), dict(w, id=run_id, user=user, notes=notes))
+                    """), dict(w, id=run_id, user=who, notes=notes))
                 else:
                     conn.execute(text("""
                         INSERT INTO production_run_items (
@@ -601,23 +627,28 @@ def save_production_run(run_id):
                     inv_id = _create_run_inventory(conn, run, user)
                 retire = end_remove + [(r['product_id'], r['unit_id']) for r in end_write
                                        if (r['product_id'], r['unit_id']) in end_current]
-                supersede_line_pairs(conn, inv_id, retire, user)
-                insert_lines(conn, inv_id, end_write, user)
+                supersede_line_pairs(conn, inv_id, retire, who)
+                insert_lines(conn, inv_id, end_write, who)
                 if submitted:
                     changed = list({k[0] for k in end_remove} | {r['product_id'] for r in end_write})
                     adopt_day_counts(conn, run['location_id'], run['production_date'])
-                    sync_counts_from_entries(conn, inv_id, user, changed,
+                    sync_counts_from_entries(conn, inv_id, who, changed,
                                              mark_changes=True, correction_notes=notes)
                     refresh_day_counts(conn, run['location_id'], run['production_date'], changed)
                 conn.execute(text("""
                     UPDATE inventory_submissions SET updated_at = NOW() WHERE id = :id
                 """), {'id': inv_id})
 
+            if signer:
+                record_signoff(conn, signer, 'production_run.correct', 'production_run', run_id,
+                               run['location_id'], note=notes)
             conn.execute(text("""
                 UPDATE production_runs SET updated_at = NOW() WHERE id = :id
             """), {'id': run_id})
         return jsonify({'status': 'ok',
                         'changed': len(writes) + len(removes) + len(end_write) + len(end_remove)})
+    except OperatorRequired:
+        return operator_required_response()
     except CommissaryAccessError as e:
         return _access_response(e)
 
@@ -693,6 +724,9 @@ def submit_production_run(run_id):
             """), {'sid': inv_id}).fetchone().n if inv_id else 0
             if not made and not counted:
                 return jsonify({'error': 'Enter at least one amount made or one End Inv before submitting'}), 400
+            signer = signer_for(conn, run['location_id'])      # who filled out and submits the run
+            record_signoff(conn, signer, 'production_run.submit', 'production_run', run_id,
+                           run['location_id'])
 
             conn.execute(text("""
                 UPDATE production_runs
@@ -712,7 +746,9 @@ def submit_production_run(run_id):
                                    _inventory_product_ids(conn, inv_id))
             elif inv_id:
                 _delete_run_inventory(conn, run)      # every End Inv was cleared: no empty inventory
-        return jsonify({'status': 'ok', 'end_counted': counted})
+        return jsonify({'status': 'ok', 'end_counted': counted, 'signed_by': signer['name']})
+    except OperatorRequired:
+        return operator_required_response()
     except CommissaryAccessError as e:
         return _access_response(e)
 

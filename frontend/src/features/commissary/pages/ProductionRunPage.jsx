@@ -13,6 +13,8 @@ import './ProductionPages.css'
 // inventory for the day: submitting the run submits that inventory too.
 // Drafts: Save / Submit / Delete. Submitted: read-only, except for admins and
 // commissary GMs (can_edit), whose saves are recorded as corrections.
+// Submitting and corrections are signed by whoever is signed in on the device
+// (the sign-in box opens by itself when nobody is).
 
 function fmtQty(v) {
   if (v == null) return ''
@@ -186,8 +188,16 @@ export default function ProductionRunPage() {
 
       {isSubmitted && (
         <div className="prod-banner">
-          Submitted by {run.submitted_by} · {formatTimestamp(run.submitted_at)}
+          Submitted by {run.submitted_by_name || run.submitted_by} · {formatTimestamp(run.submitted_at)}
           {isCorrecting && ' — changes you save are recorded as corrections; the submitted values are kept.'}
+        </div>
+      )}
+
+      {(run.signoffs || []).some(s => s.action === 'production_run.correct') && (
+        <div className="prod-signoffs">
+          {run.signoffs.filter(s => s.action === 'production_run.correct').map((s, i) => (
+            <div key={i}>Corrected by {s.signer_name} · {formatTimestamp(s.signed_at)}{s.note ? ` · ${s.note}` : ''}</div>
+          ))}
         </div>
       )}
 
@@ -258,6 +268,7 @@ export default function ProductionRunPage() {
                           <div className="sheet-item-name">
                             {it.product_name}{it.not_on_template && ' *'}
                           </div>
+
                           {et && (
                             <div className="prod-earlier">
                               Earlier today: {et.quantity != null

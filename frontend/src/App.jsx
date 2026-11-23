@@ -20,6 +20,7 @@ import CommissaryTemplateDetailPage from './features/commissary/pages/Commissary
 import ProductionHomePage           from './features/commissary/pages/ProductionHomePage.jsx'
 import ProductionRunPage            from './features/commissary/pages/ProductionRunPage.jsx'
 import ProductionPlanPage           from './features/commissary/pages/ProductionPlanPage.jsx'
+import OperatorsPage                from './features/operators/pages/OperatorsPage.jsx'
 import ProductionTemplateListPage   from './features/commissary/pages/ProductionTemplateListPage.jsx'
 import ProductionTemplateDetailPage from './features/commissary/pages/ProductionTemplateDetailPage.jsx'
 import InventoryHomePage           from './features/inventory/pages/InventoryHomePage.jsx'
@@ -122,6 +123,7 @@ function App() {
               <Route path="products"                         element={<ProductListPage />} />
               <Route path="products/:id"                     element={<ProductDetailPage />} />
               <Route path="mapping"                          element={<ToastMappingPage />} />
+              <Route path="operators"                        element={<OperatorsPage />} />
               <Route path="vendor-items"                     element={<VendorItemsPage />} />
               <Route path="sheet-templates"                  element={<OrderTemplateListPage />} />
               <Route path="sheet-templates/:id"              element={<OrderTemplateDetailPage />} />

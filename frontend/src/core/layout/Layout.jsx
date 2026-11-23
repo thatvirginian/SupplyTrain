@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Outlet, NavLink } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext.js'
 import './Layout.css'
+import { OperatorProvider, OperatorBar } from '../operators/OperatorContext.jsx'
 
 // end: only highlight on this exact URL (not on pages under it, e.g. /usage vs /usage/par-check)
 function NavItem({ to, label, icon, collapsed, end = false }) {
@@ -36,6 +37,8 @@ export default function Layout() {
   }, [collapsed])
 
   return (
+    // Operator sign-in (name + PIN on a shared login) for commissary-side users
+    <OperatorProvider enabled={isCommUser}>
     <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
 
       {/* ── Sidebar ── */}
@@ -65,6 +68,7 @@ export default function Layout() {
             <NavItem to="/mapping"               label="Toast Mapping"   icon="⇄" collapsed={collapsed} />
             <NavItem to="/par-levels"            label="Par Levels"      icon="⌆" collapsed={collapsed} />
             <NavItem to="/inventory-templates"   label="Inv Templates"   icon="⧈" collapsed={collapsed} />
+            <NavItem to="/operators"             label="Employee PINs"   icon="☺" collapsed={collapsed} />
           </>}
 
           {isCommUser && <>
@@ -130,9 +134,11 @@ export default function Layout() {
 
       {/* ── Main content ── */}
       <main className="main-content">
+        <OperatorBar />
         <Outlet />
       </main>
 
     </div>
+    </OperatorProvider>
   )
 }

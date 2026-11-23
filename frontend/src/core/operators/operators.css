@@ -1,0 +1,165 @@
+/* Operator sign-in: the bar at the top of the page and the sign-in box. */
+
+.operator-bar {
+  display:       flex;
+  align-items:   center;
+  gap:           0.6rem;
+  padding:       0.45rem 1.25rem;
+  font-size:     0.8rem;
+  background:    rgba(217, 119, 6, 0.1);
+  border-bottom: 1px solid rgba(217, 119, 6, 0.3);
+  color:         var(--text-primary);
+  position:      sticky;
+  top:           0;
+  z-index:       20;
+}
+.operator-bar.is-signed-in {
+  background:    rgba(22, 163, 74, 0.08);
+  border-bottom: 1px solid rgba(22, 163, 74, 0.25);
+}
+.operator-bar-label { color: var(--text-muted); }
+.operator-bar-btn {
+  background:    none;
+  border:        1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding:       0.2rem 0.6rem;
+  font:          inherit;
+  font-size:     0.75rem;
+  cursor:        pointer;
+  color:         var(--text-primary);
+}
+.operator-bar-btn:first-of-type { margin-left: auto; }
+.operator-bar-btn.is-primary {
+  background:   var(--accent);
+  border-color: var(--accent);
+  color:        #fff;
+}
+
+.op-overlay {
+  position:        fixed;
+  inset:           0;
+  background:      rgba(0, 0, 0, 0.45);
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  z-index:         1000;
+  padding:         1rem;
+}
+.op-dialog {
+  background:    var(--bg-card, #fff);
+  border-radius: 12px;
+  width:         100%;
+  max-width:     460px;
+  max-height:    90vh;
+  overflow-y:    auto;
+  box-shadow:    0 20px 50px rgba(0, 0, 0, 0.3);
+}
+.op-dialog-head {
+  display:         flex;
+  justify-content: space-between;
+  align-items:     flex-start;
+  padding:         1.1rem 1.25rem 0.5rem;
+}
+.op-dialog-title { font-size: 1.15rem; font-weight: 700; color: var(--text-primary); }
+.op-dialog-sub   { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem; }
+.op-close {
+  background: none;
+  border:     none;
+  font-size:  1.6rem;
+  line-height: 1;
+  cursor:     pointer;
+  color:      var(--text-muted);
+}
+.op-body  { padding: 0.5rem 1.25rem 1.25rem; }
+.op-muted { color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem 0; }
+.op-small { font-size: 0.75rem; }
+.op-error {
+  margin:        0 1.25rem;
+  padding:       0.5rem 0.75rem;
+  border-radius: 6px;
+  background:    rgba(220, 38, 38, 0.08);
+  color:         var(--error, #dc2626);
+  font-size:     0.85rem;
+}
+
+.op-names {
+  display:               grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap:                   0.5rem;
+  margin-top:            0.5rem;
+}
+.op-name {
+  position:      relative;
+  padding:       0.9rem 0.6rem;
+  border:        1px solid var(--border);
+  border-radius: 8px;
+  background:    var(--bg-surface, #f8f8f8);
+  font:          inherit;
+  font-size:     0.95rem;
+  font-weight:   600;
+  color:         var(--text-primary);
+  cursor:        pointer;
+}
+.op-name:hover:not(:disabled) { border-color: var(--accent); }
+.op-name:disabled { opacity: 0.5; cursor: not-allowed; }
+.op-dot {
+  display:       inline-block;
+  width:         8px;
+  height:        8px;
+  border-radius: 50%;
+  background:    #16a34a;
+  margin-right:  0.4rem;
+  vertical-align: middle;
+}
+.op-locked {
+  display:     block;
+  font-size:   0.65rem;
+  font-weight: 400;
+  color:       var(--error, #dc2626);
+}
+.op-name.is-no-pin { color: var(--text-muted); font-weight: 500; }
+.op-no-pin { color: var(--text-muted); }
+.op-link {
+  display:    block;
+  margin:     0.9rem auto 0;
+  background: none;
+  border:     none;
+  color:      var(--accent);
+  font:       inherit;
+  font-size:  0.8rem;
+  cursor:     pointer;
+}
+
+.op-pin-dots {
+  display:         flex;
+  justify-content: center;
+  gap:             0.9rem;
+  margin:          0.75rem 0 1.25rem;
+}
+.op-pin-dot {
+  width:         16px;
+  height:        16px;
+  border-radius: 50%;
+  border:        2px solid var(--text-muted);
+}
+.op-pin-dot.is-on { background: var(--text-primary); border-color: var(--text-primary); }
+.op-keypad {
+  display:               grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap:                   0.6rem;
+  max-width:             300px;
+  margin:                0 auto;
+}
+.op-key {
+  height:        62px;
+  border:        1px solid var(--border);
+  border-radius: 10px;
+  background:    var(--bg-surface, #f8f8f8);
+  font-size:     1.5rem;
+  font-weight:   600;
+  color:         var(--text-primary);
+  cursor:        pointer;
+  font-family:   inherit;
+}
+.op-key.is-small { font-size: 0.9rem; font-weight: 500; }
+.op-key:active:not(:disabled) { background: var(--bg-hover, #eee); }

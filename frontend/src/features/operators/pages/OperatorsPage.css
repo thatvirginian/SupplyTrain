@@ -1,0 +1,28 @@
+/* Admin → Employee PINs */
+
+.ops-filters {
+  display:       flex;
+  gap:           0.6rem;
+  align-items:   center;
+  flex-wrap:     wrap;
+  margin-bottom: 0.5rem;
+}
+
+.ops-name    { font-weight: 600; }
+.ops-sub     { font-size: 0.75rem; color: var(--text-muted); }
+.ops-actions { white-space: nowrap; text-align: right; }
+
+.ops-overlay {
+  position:        fixed;
+  inset:           0;
+  background:      rgba(0, 0, 0, 0.45);
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  z-index:         1000;
+  padding:         1rem;
+}
+.ops-modal         { width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto; }
+.ops-modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.ops-hint          { font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0.75rem; }
+.ops-pin-input     { font-size: 1.3rem; letter-spacing: 0.4em; max-width: 180px; }

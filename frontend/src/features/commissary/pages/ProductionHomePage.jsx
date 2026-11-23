@@ -261,7 +261,7 @@ export default function ProductionHomePage() {
                     <td style={{ color: 'var(--text-secondary)' }}>{r.template_name || '—'}</td>
                     <td className="prod-num">{r.item_count}</td>
                     <td className="prod-num">{r.end_count}</td>
-                    <td style={{ color: 'var(--text-muted)' }}>{r.submitted_by || r.created_by}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{r.submitted_by_name || r.submitted_by || r.created_by}</td>
                     <td>
                       <span className={`badge ${r.status === 'submitted' ? 'badge-success' : 'badge-warning'}`}>
                         {r.status}
