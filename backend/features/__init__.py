@@ -4,7 +4,7 @@
 # Each folder in features/ is one feature of the app (it matches the sidebar):
 #
 #   locations        store locations list (shared dropdown data)
-#   catalog          Products, Vendor Items, units, categories, vendors, per-location vendor overrides
+#   catalog          Products (+ QC settings), Vendor Items, units, categories, vendors, per-location vendor overrides
 #   order_sheets     Order Templates (admin) and Order Sheets (store)
 #   par_levels       Par Levels
 #   purchase_orders  Order History / Order Detail: accept, ship, receive, fulfill,
@@ -30,6 +30,7 @@ def register_features(app):
     from features.catalog.unit_and_category_routes import bp as unit_and_category_routes_bp
     from features.catalog.vendor_routes import bp as vendor_routes_bp
     from features.catalog.product_routes import bp as product_routes_bp
+    from features.catalog.product_qc_routes import bp as product_qc_routes_bp
     from features.catalog.product_unit_conversion_routes import bp as product_unit_conversion_routes_bp
     from features.catalog.vendor_item_routes import bp as vendor_item_routes_bp
     from features.catalog.location_vendor_item_routes import bp as location_vendor_item_routes_bp
@@ -53,6 +54,7 @@ def register_features(app):
     app.register_blueprint(unit_and_category_routes_bp)
     app.register_blueprint(vendor_routes_bp)
     app.register_blueprint(product_routes_bp)
+    app.register_blueprint(product_qc_routes_bp)
     app.register_blueprint(product_unit_conversion_routes_bp)
     app.register_blueprint(vendor_item_routes_bp)
     app.register_blueprint(location_vendor_item_routes_bp)

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import '../../../core/styles/shared-ui.css'
 import './ProductDetailPage.css'
+import ProductQcCard from '../components/ProductQcCard.jsx'
 
 export default function ProductDetailPage() {
   const { id }   = useParams()
@@ -538,6 +539,10 @@ export default function ProductDetailPage() {
               </div>
             )}
           </div>
+
+          {/* Quality check (QC weights on production runs) */}
+          <ProductQcCard productId={id}
+            refreshKey={productUnits.map(u => `${u.id}:${u.conversion}`).join(',')} />
 
           {/* Location assignments */}
           <div className="card">

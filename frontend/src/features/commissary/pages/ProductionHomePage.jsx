@@ -250,6 +250,7 @@ export default function ProductionHomePage() {
                   <th>Template</th>
                   <th style={{ textAlign: 'right' }}>Made</th>
                   <th style={{ textAlign: 'right' }}>End Inv</th>
+                  <th>QC</th>
                   <th>By</th>
                   <th>Status</th>
                 </tr>
@@ -261,6 +262,13 @@ export default function ProductionHomePage() {
                     <td style={{ color: 'var(--text-secondary)' }}>{r.template_name || '—'}</td>
                     <td className="prod-num">{r.item_count}</td>
                     <td className="prod-num">{r.end_count}</td>
+                    <td>
+                      {r.qc_count > 0 ? (
+                        r.qc_flags > 0
+                          ? <span className="badge badge-warning" title={`${r.qc_flags} of ${r.qc_count} weighed products outside the target`}>{r.qc_flags} off target</span>
+                          : <span className="badge badge-success" title={`${r.qc_count} weighed products on target`}>{r.qc_count} ok</span>
+                      ) : <span className="prod-muted">—</span>}
+                    </td>
                     <td style={{ color: 'var(--text-muted)' }}>{r.submitted_by_name || r.submitted_by || r.created_by}</td>
                     <td>
                       <span className={`badge ${r.status === 'submitted' ? 'badge-success' : 'badge-warning'}`}>

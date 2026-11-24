@@ -39,6 +39,11 @@
 #   DELETE  /api/production-runs/<int:run_id>            delete_production_run
 #   GET     /api/production-daily                        production_daily
 #
+# QC WEIGHTS: products an admin set up for QC (product_qc_specs) get up to
+# QC_SAMPLES weight boxes per run; see production_qc.py. A check keeps the spec in
+# force when its weights were first saved. Changing weights on a submitted run is
+# a correction (signed), like Made and End Inv.
+#
 # Signing (core/operators.py): submitting a run and correcting a submitted run
 # are signed by the person signed in on the device (or the personal login).
 # On a shared login with nobody signed in they answer 428 operator_required.
@@ -64,6 +69,7 @@ from features.commissary.commissary_access import (
 )
 from features.commissary.production_template_routes import load_production_template
 from core.operators import signer_for, record_signoff, OperatorRequired, operator_required_response
+from features.commissary.production_qc import load_specs, load_checks, evaluate, QC_SAMPLES
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +184,11 @@ def list_production_runs():
                         WHERE pri.run_id = pr.id AND pri.corrected_at IS NOT NULL) AS corrected_count,
                        (SELECT COUNT(DISTINCT e.product_id) FROM inventory_count_entries e
                         WHERE e.inventory_submission_id = pr.inventory_submission_id
-                          AND e.superseded_at IS NULL) AS end_count
+                          AND e.superseded_at IS NULL) AS end_count,
+                       (SELECT COUNT(*) FROM production_qc_checks q
+                        WHERE q.run_id = pr.id) AS qc_count,
+                       (SELECT COUNT(*) FROM production_qc_checks q
+                        WHERE q.run_id = pr.id AND q.result IN ('low', 'high')) AS qc_flags
                 FROM production_runs pr
                 LEFT JOIN production_templates pt ON pt.id = pr.template_id
                 LEFT JOIN locations l             ON l.store_guid::text = pr.location_id
@@ -394,6 +404,18 @@ def get_production_run(run_id):
                                   for r in rows],
                 }
 
+            # QC: the product's settings (when enabled) and this run's weights.
+            all_pids = [it['product_id'] for s in sections for it in s['items']]
+            specs  = load_specs(conn, all_pids)
+            checks = load_checks(conn, run_id)
+            for s in sections:
+                for it in s['items']:
+                    spec = specs.get(it['product_id'])
+                    it['qc_spec']  = spec if spec and spec['enabled'] else None
+                    it['qc_check'] = checks.get(it['product_id'])
+            run['qc_samples'] = QC_SAMPLES
+            run['qc_flags'] = sum(1 for c in checks.values() if c['result'] in ('low', 'high'))
+
             # Who signed this run (submit, corrections), newest first
             run['signoffs'] = [dict(r) for r in conn.execute(text("""
                 SELECT action, signer_name, toast_employee_guid, login_email, note, signed_at
@@ -422,7 +444,7 @@ def get_production_run(run_id):
 @comm_required
 def save_production_run(run_id):
     """
-    Body: {entries: [{product_id, quantity, end_quantity}], correction_notes?}
+    Body: {entries: [{product_id, quantity, end_quantity, qc_weights}], correction_notes?}
     One entry per product row on the sheet.
 
     quantity (Made), blank = null / '':
@@ -430,6 +452,10 @@ def save_production_run(run_id):
       submitted  -> treated as 0 (a correction; the earlier value is kept)
     end_quantity (End Inv), only when the key is sent; blank = not counted
       (the inventory line is removed, also on a submitted run).
+
+    qc_weights (QC), only when the key is sent: up to QC_SAMPLES scale readings;
+      blanks are skipped, all blank removes the check. Needs QC set up on the
+      product (unless the run already has weights for it).
 
     The unit is decided here: the run line's own unit if it exists, else the
     product's unit on the run's template. End Inv uses the same unit. A product
@@ -453,7 +479,23 @@ def save_production_run(run_id):
             raise ValueError('Amounts cannot be negative')
         return q
 
-    made, ends = {}, {}
+    def parse_weights(ws):
+        if not isinstance(ws, list):
+            raise ValueError('QC weights must be a list')
+        out = []
+        for w in ws[:QC_SAMPLES]:
+            if w is None or (isinstance(w, str) and not w.strip()):
+                continue
+            try:
+                w = round(float(w), 3)
+            except (TypeError, ValueError):
+                raise ValueError(f'Not a weight: {w}')
+            if w <= 0 or w > 1000:
+                raise ValueError('QC weights must be more than 0 (and under 1000)')
+            out.append(w)
+        return out or None
+
+    made, ends, qcw = {}, {}, {}
     try:
         for e in entries:
             try:
@@ -464,6 +506,8 @@ def save_production_run(run_id):
                 made[pid] = parse_qty(e.get('quantity'))
             if 'end_quantity' in e:
                 ends[pid] = parse_qty(e.get('end_quantity'))
+            if 'qc_weights' in e:
+                qcw[pid] = parse_weights(e.get('qc_weights'))
     except ValueError as err:
         return jsonify({'error': str(err)}), 400
 
@@ -501,14 +545,14 @@ def save_production_run(run_id):
 
             # The unit of each product row on the sheet (same rule as GET).
             unit_for = {}
-            for pid in set(made) | set(ends):
+            for pid in set(made) | set(ends) | set(qcw):
                 if pid in existing:
                     unit_for[pid] = existing[pid].unit_id
                 elif pid in template_units:
                     unit_for[pid] = template_units[pid]
                 elif pid in end_units:
                     unit_for[pid] = end_units[pid]
-                elif made.get(pid) is not None or ends.get(pid) is not None:
+                elif made.get(pid) is not None or ends.get(pid) is not None or qcw.get(pid):
                     return jsonify({'error': f'Product {pid} is not on this production template'}), 400
 
             pids  = set(unit_for)
@@ -577,10 +621,37 @@ def save_production_run(run_id):
                                          'Nothing was saved.',
                                 'missing_conversions': [dict(n) for n in names]}), 400
 
+            # ── QC weights ─────────────────────────────────────────────────────
+            qc_write, qc_remove = [], []
+            if qcw:
+                cur_checks = load_checks(conn, run_id)
+                specs = load_specs(conn, list(qcw))
+                for pid, ws in qcw.items():
+                    if pid not in unit_for:
+                        continue
+                    cur = cur_checks.get(pid)
+                    if ws is None:
+                        if cur:
+                            qc_remove.append(pid)
+                        continue
+                    if cur and cur['weights'] == ws:
+                        continue                  # unchanged
+                    if cur:
+                        snap = {'package_unit_id': cur['package_unit_id'], 'target_weight': cur['target_weight'],
+                                'tolerance': cur['tolerance'], 'scale_unit': cur['scale_unit']}
+                    else:
+                        spec = specs.get(pid)
+                        if not spec or not spec['enabled']:
+                            return jsonify({'error': f'Product {pid} is not set up for QC weights'}), 400
+                        snap = {'package_unit_id': spec['package_unit_id'], 'target_weight': spec['target_weight'],
+                                'tolerance': spec['tolerance'], 'scale_unit': spec['scale_unit']}
+                    avg, result = evaluate(ws, snap['target_weight'], snap['tolerance'])
+                    qc_write.append(dict(snap, pid=pid, weights=ws, avg=avg, result=result))
+
             # A change to a SUBMITTED run is a correction: it is signed (who changed it).
             who = user
             signer = None
-            if submitted and (writes or removes or end_write or end_remove):
+            if submitted and (writes or removes or end_write or end_remove or qc_write or qc_remove):
                 signer = signer_for(conn, run['location_id'])
                 who = signer['name']
 
@@ -639,6 +710,29 @@ def save_production_run(run_id):
                     UPDATE inventory_submissions SET updated_at = NOW() WHERE id = :id
                 """), {'id': inv_id})
 
+            # ── Write QC weights ───────────────────────────────────────────────
+            if qc_remove:
+                conn.execute(text("""
+                    DELETE FROM production_qc_checks WHERE run_id = :id AND product_id = ANY(:pids)
+                """), {'id': run_id, 'pids': qc_remove})
+            for q in qc_write:
+                conn.execute(text("""
+                    INSERT INTO production_qc_checks (
+                        run_id, product_id, weights, average_weight, result,
+                        package_unit_id, target_weight, tolerance, scale_unit,
+                        entered_by, updated_by
+                    ) VALUES (
+                        :id, :pid, CAST(:weights AS numeric[]), :avg, :result,
+                        :package_unit_id, :target_weight, :tolerance, :scale_unit, :who, :who
+                    )
+                    ON CONFLICT (run_id, product_id) DO UPDATE SET
+                        weights        = EXCLUDED.weights,
+                        average_weight = EXCLUDED.average_weight,
+                        result         = EXCLUDED.result,
+                        updated_by     = EXCLUDED.updated_by,
+                        updated_at     = NOW()
+                """), dict(q, id=run_id, who=who))
+
             if signer:
                 record_signoff(conn, signer, 'production_run.correct', 'production_run', run_id,
                                run['location_id'], note=notes)
@@ -646,7 +740,8 @@ def save_production_run(run_id):
                 UPDATE production_runs SET updated_at = NOW() WHERE id = :id
             """), {'id': run_id})
         return jsonify({'status': 'ok',
-                        'changed': len(writes) + len(removes) + len(end_write) + len(end_remove)})
+                        'changed': len(writes) + len(removes) + len(end_write) + len(end_remove)
+                                   + len(qc_write) + len(qc_remove)})
     except OperatorRequired:
         return operator_required_response()
     except CommissaryAccessError as e:

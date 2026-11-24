@@ -202,3 +202,52 @@
   .plan-ord { color: #000; }
   .plan-inv { color: #444; }
 }
+
+/* Run sheet: QC weights (products weighed for QC) */
+.prod-qc {
+  display:     grid;
+  grid-template-columns: 70px 1fr;
+  grid-template-areas: "label label" ". boxes" ". result";
+  gap:         0.3rem 0.5rem;
+  margin-top:  0.35rem;
+  padding-top: 0.4rem;
+  border-top:  1px dashed var(--border-light);
+}
+
+.prod-qc-label {
+  grid-area:      label;
+  font-size:      0.62rem;
+  color:          var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display:        flex;
+  gap:            0.6rem;
+  flex-wrap:      wrap;
+}
+
+.prod-qc-target {
+  font-family:    var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.prod-qc-boxes {
+  grid-area: boxes;
+  display:   grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap:       0.4rem;
+}
+
+.sheet-count-input.prod-qc-input {
+  font-size: 0.95rem;
+  padding:   0.35rem 0.45rem;
+}
+
+.prod-qc-result {
+  grid-area:   result;
+  font-size:   0.75rem;
+  color:       var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.prod-qc-result .badge { font-family: var(--font-body); margin-left: 0.25rem; }

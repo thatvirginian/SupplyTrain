@@ -16,6 +16,23 @@ import './ProductionPages.css'
 // Submitting and corrections are signed by whoever is signed in on the device
 // (the sign-in box opens by itself when nobody is).
 
+// QC: average + result of the weights typed so far, against target ± tolerance.
+function qcLive(weights, target, tolerance) {
+  const nums = weights.map(w => parseFloat(w)).filter(w => !isNaN(w) && w > 0)
+  if (nums.length === 0) return null
+  const avg = nums.reduce((a, b) => a + b, 0) / nums.length
+  const spread = nums.length > 1 ? Math.max(...nums) - Math.min(...nums) : 0
+  let result = 'none'
+  if (target != null) {
+    const tol = tolerance || 0
+    result = avg < target - tol - 1e-9 ? 'low' : avg > target + tol + 1e-9 ? 'high' : 'ok'
+  }
+  return { avg, spread, result, n: nums.length }
+}
+
+const QC_BADGE = { ok: 'badge-success', low: 'badge-warning', high: 'badge-error', none: 'badge-neutral' }
+const QC_LABEL = { ok: 'on target', low: 'light', high: 'heavy', none: 'no target' }
+
 function fmtQty(v) {
   if (v == null) return ''
   return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 })
@@ -30,6 +47,7 @@ export default function ProductionRunPage() {
   const [error,      setError]      = useState(null)
   const [entries,    setEntries]    = useState({})     // Made:    { product_id: '2.5' }
   const [endEntries, setEndEntries] = useState({})     // End Inv: { product_id: '12' }
+  const [qcEntries,  setQcEntries]  = useState({})     // QC:      { product_id: ['4.4', '', '', ''] }
   const [dirty,      setDirty]      = useState(false)
   const [notes,      setNotes]      = useState('')     // correction reason
   const [saving,     setSaving]     = useState(false)
@@ -43,13 +61,19 @@ export default function ProductionRunPage() {
     try {
       const res = await axios.get(`/api/production-runs/${runId}`)
       setRun(res.data)
-      const e = {}, end = {}
+      const e = {}, end = {}, qc = {}
+      const n = res.data.qc_samples || 4
       res.data.lines.forEach(l => { e[l.product_id] = String(l.quantity) })
       res.data.sections.forEach(s => s.items.forEach(it => {
         if (it.end_quantity != null) end[it.product_id] = String(it.end_quantity)
+        if (it.qc_spec || it.qc_check) {
+          const w = (it.qc_check?.weights || []).map(String)
+          qc[it.product_id] = [...w, ...Array(Math.max(0, n - w.length)).fill('')]
+        }
       }))
       setEntries(e)
       setEndEntries(end)
+      setQcEntries(qc)
       setDirty(false)
     } catch (e) {
       setError(e.response?.data?.error || 'Could not load the production run.')
@@ -72,6 +96,15 @@ export default function ProductionRunPage() {
     setDirty(true)
   }
 
+  const handleQcChange = (productId, idx, value) => {
+    setQcEntries(prev => {
+      const w = [...(prev[productId] || [])]
+      w[idx] = value
+      return { ...prev, [productId]: w }
+    })
+    setDirty(true)
+  }
+
   // Returns true when the save worked, so Submit stops on a failed save.
   const handleSave = async () => {
     setSaving(true)
@@ -83,11 +116,16 @@ export default function ProductionRunPage() {
         entries: allItems.map(it => {
           const v = entries[it.product_id]
           const ev = endEntries[it.product_id]
-          return {
+          const row = {
             product_id:   it.product_id,
             quantity:     v === undefined || v === '' ? null : v,
             end_quantity: ev === undefined || ev === '' ? null : ev,
           }
+          // QC weights only for products weighed for QC (or already weighed on this run)
+          if (qcEntries[it.product_id]) {
+            row.qc_weights = qcEntries[it.product_id].map(w => (w === '' ? null : w))
+          }
+          return row
         }),
         correction_notes: notes.trim() || null,
       })
@@ -315,6 +353,46 @@ export default function ProductionRunPage() {
                           Also counted: {it.end_other.map(o => `${fmtQty(o.quantity)} ${o.unit_name}`).join(' + ')}
                         </div>
                       )}
+                      {qcEntries[it.product_id] && (() => {
+                        const spec = it.qc_spec
+                        const chk  = it.qc_check
+                        // A run's weights are judged against the target they were first saved with
+                        const target = chk ? chk.target_weight : spec?.target_weight
+                        const tol    = chk ? chk.tolerance     : spec?.tolerance
+                        const scale  = chk ? chk.scale_unit    : spec?.scale_unit
+                        const pkg    = chk ? chk.package_unit  : spec?.package_unit
+                        const live   = qcLive(qcEntries[it.product_id], target, tol)
+                        return (
+                          <div className="prod-qc">
+                            <div className="prod-qc-label">
+                              QC · {pkg} weights ({scale})
+                              {target != null && (
+                                <span className="prod-qc-target">target {fmtQty(target)} ± {fmtQty(tol)}</span>
+                              )}
+                            </div>
+                            <div className="prod-qc-boxes">
+                              {qcEntries[it.product_id].map((w, i) => (
+                                <NumericInput key={i}
+                                  className="sheet-count-input prod-qc-input"
+                                  placeholder={`#${i + 1}`}
+                                  value={w}
+                                  disabled={readOnly}
+                                  onChange={e => handleQcChange(it.product_id, i, e.target.value)}
+                                />
+                              ))}
+                            </div>
+                            <div className="prod-qc-result">
+                              {live ? (
+                                <>
+                                  avg <strong>{fmtQty(Math.round(live.avg * 1000) / 1000)}</strong>
+                                  {live.n > 1 && <> · spread {fmtQty(Math.round(live.spread * 1000) / 1000)}</>}
+                                  {' '}<span className={`badge ${QC_BADGE[live.result]}`}>{QC_LABEL[live.result]}</span>
+                                </>
+                              ) : <span className="prod-muted">not weighed</span>}
+                            </div>
+                          </div>
+                        )
+                      })()}
                       {corrected && (
                         <div className="prod-was" title={`${line.corrected_by} · ${formatTimestamp(line.corrected_at)}${line.correction_notes ? ' · ' + line.correction_notes : ''}`}>
                           was {fmtQty(line.original_quantity)} {it.unit_name} · corrected by {line.corrected_by}
