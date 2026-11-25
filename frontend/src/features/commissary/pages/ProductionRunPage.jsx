@@ -308,63 +308,79 @@ export default function ProductionRunPage() {
                   </span>
                 </div>
 
+                {!isCollapsed && (
+                  // Column headings for the one-line-per-product layout (wide screens only)
+                  <div className="prod-col-head" aria-hidden="true">
+                    <span>Product</span><span>Unit</span><span>Made</span><span>End Inv</span><span>Made by</span>
+                  </div>
+                )}
+
                 {!isCollapsed && section.items.map(it => {
                   const line = it.line
                   const corrected = line && line.corrected_at
                   const et = it.earlier_today
                   return (
-                    <div key={it.product_id} className="sheet-item">
-                      <div className="sheet-item-header">
-                        <div>
-                          <div className="sheet-item-name">
-                            {it.product_name}{it.not_on_template && ' *'}
-                          </div>
-
-                          {et && (
-                            <div className="prod-earlier">
-                              Earlier today: {et.quantity != null
-                                ? `${fmtQty(et.quantity)} ${et.unit_name}`
-                                : et.base.map(b => `${fmtQty(b.quantity)} ${b.unit_name}`).join(' + ')}
-                              {' '}({et.runs} {et.runs === 1 ? 'run' : 'runs'})
-                            </div>
-                          )}
+                    <div key={it.product_id} className="prod-row">
+                      <div className="prod-row-name">
+                        <div className="prod-row-title">
+                          {it.product_name}{it.not_on_template && ' *'}
                         </div>
+                        {et && (
+                          <div className="prod-earlier">
+                            Earlier today: {et.quantity != null
+                              ? `${fmtQty(et.quantity)} ${et.unit_name}`
+                              : et.base.map(b => `${fmtQty(b.quantity)} ${b.unit_name}`).join(' + ')}
+                            {' '}({et.runs} {et.runs === 1 ? 'run' : 'runs'})
+                          </div>
+                        )}
                         {line && line.unit_id !== line.base_unit_id && (
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                            = {fmtQty(line.base_quantity)} {line.base_unit}
+                          <div className="prod-earlier">made = {fmtQty(line.base_quantity)} {line.base_unit}</div>
+                        )}
+                        {it.end_other?.length > 0 && (
+                          <div className="prod-end-other">
+                            Also counted: {it.end_other.map(o => `${fmtQty(o.quantity)} ${o.unit_name}`).join(' + ')}
+                          </div>
+                        )}
+                        {corrected && (
+                          <div className="prod-was" title={`${line.corrected_by} · ${formatTimestamp(line.corrected_at)}${line.correction_notes ? ' · ' + line.correction_notes : ''}`}>
+                            was {fmtQty(line.original_quantity)} {it.unit_name} · corrected by {line.corrected_by}
+                            {line.correction_notes && ` · ${line.correction_notes}`}
                           </div>
                         )}
                       </div>
-                      <div className="sheet-count-row prod-count-row">
-                        <div className="sheet-count-unit"
-                          title={it.not_on_template ? 'No longer on the template' : undefined}>
-                          {it.unit_name}
-                        </div>
-                        <div className="sheet-count-input-wrap">
-                          <label className="sheet-count-label">Made</label>
-                          <NumericInput
-                            className="sheet-count-input"
-                            placeholder="0"
-                            value={entries[it.product_id] ?? ''}
-                            disabled={readOnly}
-                            onChange={e => handleChange(it.product_id, e.target.value)}
-                          />
-                        </div>
-                        <div className="sheet-count-input-wrap">
-                          <label className="sheet-count-label">End Inv</label>
-                          <NumericInput
-                            className="sheet-count-input"
-                            placeholder="—"
-                            value={endEntries[it.product_id] ?? ''}
-                            disabled={readOnly}
-                            onChange={e => handleEndChange(it.product_id, e.target.value)}
-                          />
-                        </div>
+
+                      <div className="prod-row-unit"
+                        title={it.not_on_template ? 'No longer on the template' : undefined}>
+                        {it.unit_name}
                       </div>
-                      <div className="prod-made-by">
-                        <label className="sheet-count-label" htmlFor={`mb-${it.product_id}`}>Made by</label>
+
+                      <div className="prod-row-made">
+                        <label className="sheet-count-label prod-mobile-label">Made</label>
+                        <NumericInput
+                          className="sheet-count-input prod-row-input"
+                          aria-label={`${it.product_name} made (${it.unit_name})`}
+                          value={entries[it.product_id] ?? ''}
+                          disabled={readOnly}
+                          onChange={e => handleChange(it.product_id, e.target.value)}
+                        />
+                      </div>
+
+                      <div className="prod-row-end">
+                        <label className="sheet-count-label prod-mobile-label">End Inv</label>
+                        <NumericInput
+                          className="sheet-count-input prod-row-input"
+                          aria-label={`${it.product_name} end inventory (${it.unit_name})`}
+                          value={endEntries[it.product_id] ?? ''}
+                          disabled={readOnly}
+                          onChange={e => handleEndChange(it.product_id, e.target.value)}
+                        />
+                      </div>
+
+                      <div className="prod-row-by">
+                        <label className="sheet-count-label prod-mobile-label" htmlFor={`mb-${it.product_id}`}>Made by</label>
                         <input id={`mb-${it.product_id}`}
                           className="input prod-made-by-input"
+                          aria-label={`${it.product_name} made by`}
                           list="made-by-names"
                           placeholder="Name"
                           maxLength={80}
@@ -374,11 +390,7 @@ export default function ProductionRunPage() {
                           onChange={e => handleMadeByChange(it.product_id, e.target.value)}
                         />
                       </div>
-                      {it.end_other?.length > 0 && (
-                        <div className="prod-end-other">
-                          Also counted: {it.end_other.map(o => `${fmtQty(o.quantity)} ${o.unit_name}`).join(' + ')}
-                        </div>
-                      )}
+
                       {qcEntries[it.product_id] && (() => {
                         const spec = it.qc_spec
                         const chk  = it.qc_check
@@ -400,6 +412,7 @@ export default function ProductionRunPage() {
                               {qcEntries[it.product_id].map((w, i) => (
                                 <NumericInput key={i}
                                   className="sheet-count-input prod-qc-input"
+                                  aria-label={`${it.product_name} QC weight ${i + 1}`}
                                   placeholder={`#${i + 1}`}
                                   value={w}
                                   disabled={readOnly}
@@ -419,12 +432,6 @@ export default function ProductionRunPage() {
                           </div>
                         )
                       })()}
-                      {corrected && (
-                        <div className="prod-was" title={`${line.corrected_by} · ${formatTimestamp(line.corrected_at)}${line.correction_notes ? ' · ' + line.correction_notes : ''}`}>
-                          was {fmtQty(line.original_quantity)} {it.unit_name} · corrected by {line.corrected_by}
-                          {line.correction_notes && ` · ${line.correction_notes}`}
-                        </div>
-                      )}
                     </div>
                   )
                 })}

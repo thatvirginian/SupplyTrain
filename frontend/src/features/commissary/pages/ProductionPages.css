@@ -57,10 +57,6 @@
   background:    var(--bg-surface);
 }
 
-/* Run sheet: unit | Made | End Inv on one row */
-.prod-count-row {
-  grid-template-columns: 70px 1fr 1fr;
-}
 
 .prod-end-other {
   font-size:   0.7rem;
@@ -252,18 +248,127 @@
 
 .prod-qc-result .badge { font-family: var(--font-body); margin-left: 0.25rem; }
 
-/* Run sheet: "Made by" (typed name per product) */
-.prod-made-by {
-  display:     grid;
-  grid-template-columns: 70px 1fr;
-  gap:         0.5rem;
-  align-items: center;
-  padding:     0.35rem 0 0.1rem;
-}
-
-.prod-made-by .sheet-count-label { margin: 0; }
 
 .input.prod-made-by-input {
   padding:   0.35rem 0.55rem;
   font-size: 0.9rem;
+}
+
+/* ── Run sheet: one product per row ─────────────────────────────────────────
+   Phones: stacked (name; unit | Made | End Inv; Made by; QC).
+   760px and up (iPad and desktop): one line per product, like the paper sheet:
+   Product | Unit | Made | End Inv | Made by, with QC weights on a line under it. */
+.prod-row {
+  display:     grid;
+  grid-template-columns: 64px 1fr 1fr;
+  grid-template-areas:
+    "name name name"
+    "unit made end"
+    "by   by   by"
+    "qc   qc   qc";
+  gap:           0.4rem 0.5rem;
+  align-items:   end;
+  padding:       0.7rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.prod-row-name  { grid-area: name; min-width: 0; }
+.prod-row-unit  { grid-area: unit; }
+.prod-row-made  { grid-area: made; display: flex; flex-direction: column; }
+.prod-row-end   { grid-area: end;  display: flex; flex-direction: column; }
+.prod-row-by    {
+  grid-area:   by;
+  display:     grid;
+  grid-template-columns: 64px 1fr;
+  gap:         0.5rem;
+  align-items: center;
+}
+.prod-row .prod-qc { grid-area: qc; }
+
+.prod-row-title {
+  font-size:   0.9rem;
+  font-weight: 600;
+  color:       var(--text-primary);
+}
+
+.prod-row-unit {
+  font-size:      0.72rem;
+  font-weight:    600;
+  color:          var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 0.65rem;
+}
+
+.prod-row-by .sheet-count-label { margin: 0; }
+
+.sheet-count-input.prod-row-input { padding: 0.45rem 0.6rem; }
+
+/* Column headings: wide screens only */
+.prod-col-head { display: none; }
+
+@media (min-width: 760px) {
+  /* iPad with the sidebar leaves about 600px: keep the columns tight here */
+  .prod-row,
+  .prod-col-head {
+    grid-template-columns: minmax(110px, 1fr) 44px 76px 76px minmax(110px, 170px);
+    column-gap:    0.6rem;
+    padding-left:  1rem;
+    padding-right: 1rem;
+  }
+
+  .prod-row {
+    grid-template-areas:
+      "name unit made end by"
+      "qc   qc   qc   qc  qc";
+    align-items: center;
+    row-gap:     0.35rem;
+    padding-top:    0.45rem;
+    padding-bottom: 0.45rem;
+  }
+  .prod-row:hover { background: var(--bg-raised); }
+
+  .prod-col-head {
+    display:        grid;
+    padding-top:    0.35rem;
+    padding-bottom: 0.35rem;
+    font-size:      0.6rem;
+    font-weight:    600;
+    color:          var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    border-bottom:  1px solid var(--border);
+    background:     var(--bg-surface);
+  }
+
+  .prod-mobile-label { display: none; }
+  .prod-row-by { display: block; }
+  .prod-row-unit { padding-bottom: 0; }
+  .sheet-count-input.prod-row-input { font-size: 1rem; padding: 0.35rem 0.55rem; }
+  .input.prod-made-by-input { padding: 0.35rem 0.55rem; }
+
+  /* QC weights: one line under the product, lined up with the Unit column */
+  .prod-row .prod-qc {
+    display:      flex;
+    align-items:  center;
+    flex-wrap:    wrap;
+    gap:          0.4rem 0.75rem;
+    margin:       0 0 0.2rem;
+    padding:      0;
+    border-top:   none;
+  }
+  .prod-row .prod-qc-label { flex: 0 0 auto; }
+  .prod-row .prod-qc-boxes { grid-template-columns: repeat(4, 64px); }
+}
+
+@media (min-width: 1100px) {
+  .prod-row,
+  .prod-col-head {
+    grid-template-columns: minmax(160px, 1fr) 56px 104px 104px minmax(150px, 230px);
+    column-gap:    1rem;
+    padding-left:  2rem;
+    padding-right: 2rem;
+  }
+  .prod-row .prod-qc-label { min-width: 160px; }
+  .prod-row .prod-qc-boxes { grid-template-columns: repeat(4, 72px); }
 }
