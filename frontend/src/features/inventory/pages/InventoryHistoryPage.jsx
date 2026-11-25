@@ -139,6 +139,9 @@ export default function InventoryHistoryPage() {
                     </td>
                     <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                       {s.template_name || '—'}
+                      {s.storage_area_name && s.storage_area_name !== 'Main' && (
+                        <span style={{ color: 'var(--text-secondary)' }}> · {s.storage_area_name}</span>
+                      )}
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>{s.item_count}</td>
                     <td>

@@ -25,6 +25,7 @@ from core.auth import (
 )
 from core.database import get_engine
 from core.units import load_base_units, load_conversion_map, base_factor
+from features.commissary.storage_areas import resolve_area, AreaError
 from features.inventory.inventory_count_service import (
     supersede_line_pairs, insert_lines, replace_product_lines,
     sync_counts_from_entries, refresh_day_counts, adopt_day_counts,
@@ -105,6 +106,11 @@ def list_inventory_submissions():
     if source:
         filters.append('ivs.source = :source')
         params['source'] = source
+    if request.args.get('storage_area_id'):
+        # Storage areas (commissaries): an inventory with no area belongs to Main
+        filters.append("""COALESCE(ivs.storage_area_id, (SELECT m.id FROM storage_areas m
+                             WHERE m.location_id = ivs.location_id AND m.kind = 'main')) = :area_id""")
+        params['area_id'] = request.args.get('storage_area_id', type=int)
 
     where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
 
@@ -122,6 +128,8 @@ def list_inventory_submissions():
                 ivs.template_id,
                 ivs.notes, ivs.created_at,
                 l.location_name,
+                COALESCE(ivs.storage_area_id, ma.id) AS storage_area_id,
+                COALESCE(sa.name, ma.name)          AS storage_area_name,
                 COALESCE(it.name, pt.name) AS template_name,
                 pr.id AS production_run_id,
                 -- Products counted: a draft only has lines; a submitted inventory has totals
@@ -137,6 +145,8 @@ def list_inventory_submissions():
             LEFT JOIN inventory_templates it ON ivs.template_id    = it.id
             LEFT JOIN production_runs pr     ON pr.inventory_submission_id = ivs.id
             LEFT JOIN production_templates pt ON pt.id = pr.template_id
+            LEFT JOIN storage_areas sa       ON sa.id = ivs.storage_area_id
+            LEFT JOIN storage_areas ma       ON ma.location_id = ivs.location_id AND ma.kind = 'main'
             {where}
             ORDER BY ivs.count_date DESC, ivs.created_at DESC
             LIMIT :limit OFFSET :offset
@@ -253,6 +263,8 @@ def get_inventory_submission(submission_id):
                 l.location_name,
                 -- Manual: the inventory template. Order sheet: the order sheet template.
                 -- Production (End Inv of a production run): the production template.
+                COALESCE(ivs.storage_area_id, ma.id) AS storage_area_id,
+                COALESCE(sa.name, ma.name)          AS storage_area_name,
                 COALESCE(it.name, st.name, pt.name) AS template_name,
                 ss.template_id AS sheet_template_id,
                 pr.id          AS production_run_id,
@@ -264,6 +276,8 @@ def get_inventory_submission(submission_id):
             LEFT JOIN sheet_templates st     ON st.id = ss.template_id
             LEFT JOIN production_runs pr     ON pr.inventory_submission_id = ivs.id
             LEFT JOIN production_templates pt ON pt.id = pr.template_id
+            LEFT JOIN storage_areas sa       ON sa.id = ivs.storage_area_id
+            LEFT JOIN storage_areas ma       ON ma.location_id = ivs.location_id AND ma.kind = 'main'
             WHERE ivs.id = :id
         """), {'id': submission_id}).mappings().fetchone()
 
@@ -526,6 +540,8 @@ def create_inventory_submission():
     Create a new manual inventory.
     Staff: always their own location. Admins: must pass location_id.
     The template must be active and assigned to that location.
+    storage_area_id: for a location with storage areas (commissaries), the area
+    this inventory counts (default Main); its counts set that area's count only.
     """
     data        = request.get_json(force=True) or {}
     template_id = data.get('template_id')
@@ -557,19 +573,24 @@ def create_inventory_submission():
             """), {'template_id': template_id, 'location_id': location_id}).fetchone()
             if not assigned:
                 return jsonify({'error': 'That template is not assigned to this location'}), 400
+            try:
+                area = resolve_area(conn, location_id, data.get('storage_area_id'))
+            except AreaError as e:
+                return jsonify({'error': str(e)}), e.status
 
             # Decision #10 (reuse an existing draft or not) is still open, so this
             # keeps today's behavior: every Start creates a new draft.
             result = conn.execute(text("""
                 INSERT INTO inventory_submissions (
                     template_id, location_id, count_date,
-                    source, status, submitted_by
+                    source, status, submitted_by, storage_area_id
                 ) VALUES (
                     :template_id, :location_id, :count_date,
-                    'manual', 'draft', :submitted_by
+                    'manual', 'draft', :submitted_by, :area
                 )
                 RETURNING id
             """), {
+                'area':         area['id'] if area else None,
                 'template_id':  template_id,
                 'location_id':  location_id,
                 'count_date':   count_date,

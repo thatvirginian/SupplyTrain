@@ -195,7 +195,9 @@ def build_production_plan_pdf(plan):
         canvas.setFillColor(MUTED)
         canvas.drawRightString(right, top - 10, f"Printed {printed.month}/{printed.day} {printed.strftime('%I:%M %p').lstrip('0')}")
         canvas.drawRightString(right, top - 21, 'Each store box: INV (store count) top left, ORD (order) bottom right')
-        canvas.drawRightString(right, top - 32, 'Comm Inv: commissary count before this day')
+        areas_txt = ' + '.join(a['name'] for a in (plan.get('comm_areas') or []))
+        canvas.drawRightString(right, top - 32, 'Comm Inv: commissary count before this day'
+                               + (f' ({areas_txt})' if areas_txt else ''))
         canvas.drawRightString(right, MARGIN - 14, f'Page {doc.page}')
         canvas.setStrokeColor(RED)
         canvas.setLineWidth(1.5)

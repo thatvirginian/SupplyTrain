@@ -29,6 +29,15 @@
 #   sync_counts_from_entries(conn, ...)  rebuild an inventory's per-product rows from its lines
 #   copy_sheet_entries(conn, ...)        copy an order sheet's lines onto its inventory
 #   refresh_day_counts(conn, ...)        re-pick the day's count for a location / date
+#                                        (and, for a location with storage areas, each
+#                                        area's day's count in inventory_area_counts)
+#
+# STORAGE AREAS (commissaries; storage_areas_plan.md): a location with areas has a
+# Main area. Every inventory belongs to one area (inventory_submissions.storage_area_id,
+# NULL = Main). The rule "latest submitted count wins" applies per product PER AREA
+# (inventory_area_counts), so a site count never replaces Main's count. For such a
+# location inventory_counts holds the MAIN area's day's count (what it always held),
+# so usage / older reports keep their meaning. Locations without areas: unchanged.
 #   adopt_day_counts(conn, ...)          safety net for counts written by the old code
 # =============================================================================
 
@@ -234,10 +243,18 @@ def refresh_day_counts(conn, location_id, count_date, product_ids=None):
     product_ids limits the work to those products; None means the whole day.
     Rows left behind by inventories deleted before this rule existed
     (inventory_submission_id IS NULL) are never removed here.
+
+    A location with storage areas: only Main's inventories compete for
+    inventory_counts, and every area's winner is kept in inventory_area_counts.
     """
     if product_ids is not None and not product_ids:
         return
     params = {'location_id': str(location_id), 'count_date': count_date}
+    main_id = main_area_id(conn, location_id)
+    area_filter = ''
+    if main_id:
+        params['main_id'] = main_id
+        area_filter = 'AND COALESCE(ivs.storage_area_id, :main_id) = :main_id'
     c_filter = d_filter = ''
     if product_ids is not None:
         params['pids'] = list(product_ids)
@@ -259,6 +276,7 @@ def refresh_day_counts(conn, location_id, count_date, product_ids=None):
                 AND ivs.count_date  = d.count_date
                 AND ivs.status      = 'submitted'
                 AND c.product_id    = d.product_id
+                {area_filter}
           )
     """), params)
 
@@ -284,10 +302,103 @@ def refresh_day_counts(conn, location_id, count_date, product_ids=None):
               AND ivs.count_date  = :count_date
               AND ivs.status      = 'submitted'
               {c_filter}
+              {area_filter}
             ORDER BY c.product_id, ivs.submitted_at DESC NULLS LAST, ivs.id DESC
         ) w
         ON CONFLICT (location_id, product_id, count_date) DO UPDATE SET
                 inventory_submission_id = EXCLUDED.inventory_submission_id,
                 submission_id           = EXCLUDED.submission_id,
                 {update_cols}
+    """), params)
+
+    if main_id:
+        refresh_area_counts(conn, location_id, count_date, product_ids, main_id)
+
+
+# =============================================================================
+# Storage areas
+# =============================================================================
+
+def main_area_id(conn, location_id):
+    """The Main storage area of a location, or None when the location has no areas."""
+    row = conn.execute(text("""
+        SELECT id FROM storage_areas WHERE location_id = :lid AND kind = 'main'
+    """), {'lid': str(location_id)}).fetchone()
+    return row.id if row else None
+
+
+def refresh_area_counts(conn, location_id, count_date, product_ids=None, main_id=None):
+    """
+    Re-pick each AREA's day's count (inventory_area_counts) for one location and
+    date: per area and product, the row of the inventory of THAT area submitted
+    last. An inventory with no area belongs to Main. Rows no submitted inventory
+    of their area backs any more are removed (rows with no inventory, e.g. copied
+    history, are kept).
+    """
+    if product_ids is not None and not product_ids:
+        return
+    if main_id is None:
+        main_id = main_area_id(conn, location_id)
+        if not main_id:
+            return
+    params = {'location_id': str(location_id), 'count_date': count_date, 'main_id': main_id}
+    c_filter = d_filter = ''
+    if product_ids is not None:
+        params['pids'] = list(product_ids)
+        c_filter = 'AND c.product_id = ANY(:pids)'
+        d_filter = 'AND d.product_id = ANY(:pids)'
+
+    conn.execute(text(f"""
+        DELETE FROM inventory_area_counts d
+        WHERE d.location_id = :location_id
+          AND d.count_date  = :count_date
+          AND d.inventory_submission_id IS NOT NULL
+          {d_filter}
+          AND NOT EXISTS (
+              SELECT 1
+              FROM inventory_submission_counts c
+              JOIN inventory_submissions ivs ON ivs.id = c.inventory_submission_id
+              WHERE ivs.location_id = d.location_id
+                AND ivs.count_date  = d.count_date
+                AND ivs.status      = 'submitted'
+                AND COALESCE(ivs.storage_area_id, :main_id) = d.storage_area_id
+                AND c.product_id    = d.product_id
+          )
+    """), params)
+
+    conn.execute(text(f"""
+        INSERT INTO inventory_area_counts (
+            storage_area_id, location_id, product_id, count_date,
+            base_quantity, base_unit_id, entered_quantity, entered_unit_id, entered_by,
+            inventory_submission_id, original_quantity, corrected_by, corrected_at,
+            correction_notes, updated_at
+        )
+        SELECT w.area_id, CAST(:location_id AS varchar), w.product_id, CAST(:count_date AS date),
+               w.base_quantity, w.base_unit_id, w.entered_quantity, w.entered_unit_id, w.entered_by,
+               w.inventory_submission_id, w.original_quantity, w.corrected_by, w.corrected_at,
+               w.correction_notes, NOW()
+        FROM (
+            SELECT DISTINCT ON (COALESCE(ivs.storage_area_id, :main_id), c.product_id)
+                   COALESCE(ivs.storage_area_id, :main_id) AS area_id, c.*
+            FROM inventory_submission_counts c
+            JOIN inventory_submissions ivs ON ivs.id = c.inventory_submission_id
+            WHERE ivs.location_id = :location_id
+              AND ivs.count_date  = :count_date
+              AND ivs.status      = 'submitted'
+              {c_filter}
+            ORDER BY COALESCE(ivs.storage_area_id, :main_id), c.product_id,
+                     ivs.submitted_at DESC NULLS LAST, ivs.id DESC
+        ) w
+        ON CONFLICT (storage_area_id, product_id, count_date) DO UPDATE SET
+            base_quantity           = EXCLUDED.base_quantity,
+            base_unit_id            = EXCLUDED.base_unit_id,
+            entered_quantity        = EXCLUDED.entered_quantity,
+            entered_unit_id         = EXCLUDED.entered_unit_id,
+            entered_by              = EXCLUDED.entered_by,
+            inventory_submission_id = EXCLUDED.inventory_submission_id,
+            original_quantity       = EXCLUDED.original_quantity,
+            corrected_by            = EXCLUDED.corrected_by,
+            corrected_at            = EXCLUDED.corrected_at,
+            correction_notes        = EXCLUDED.correction_notes,
+            updated_at              = NOW()
     """), params)

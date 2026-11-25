@@ -44,6 +44,12 @@
 # force when its weights were first saved. Changing weights on a submitted run is
 # a correction (signed), like Made and End Inv.
 #
+# STORAGE AREAS (storage_areas_plan.md): a run is FOR an area of the commissary
+# (storage_area_id, NULL = Main), chosen when it starts, default Main. Made goes into
+# that area and the run's End Inv is THAT area's count (its inventory carries the
+# area). "Earlier today" only counts runs of the same area. Lists / day totals can
+# be filtered by area (?storage_area_id=).
+#
 # MADE BY: each product row can carry a name, TYPED by whoever fills in the sheet
 # (like the names next to each product on the paper sheet): who made it, and so
 # who weighed its QC bags. No PIN, no Toast link (production_run_made_by).
@@ -74,6 +80,11 @@ from features.commissary.commissary_access import (
 from features.commissary.production_template_routes import load_production_template
 from core.operators import signer_for, record_signoff, OperatorRequired, operator_required_response
 from features.commissary.production_qc import load_specs, load_checks, evaluate, QC_SAMPLES
+from features.commissary.storage_areas import resolve_area, AreaError
+
+# A run's area (NULL storage_area_id = the location's Main area), for SQL on `pr`.
+AREA_EXPR = ("COALESCE(pr.storage_area_id, (SELECT m.id FROM storage_areas m "
+             "WHERE m.location_id = pr.location_id AND m.kind = 'main'))")
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +111,14 @@ def _load_run(conn, run_id):
         SELECT pr.id, pr.template_id, pr.location_id, pr.production_date, pr.status,
                pr.notes, pr.created_by, pr.created_at, pr.updated_at,
                pr.submitted_by, pr.submitted_at, pr.inventory_submission_id,
-               pt.name AS template_name, l.location_name
+               pt.name AS template_name, l.location_name,
+               COALESCE(pr.storage_area_id, ma.id) AS storage_area_id,
+               COALESCE(sa.name, ma.name)          AS storage_area_name
         FROM production_runs pr
         LEFT JOIN production_templates pt ON pt.id = pr.template_id
         LEFT JOIN locations l             ON l.store_guid::text = pr.location_id
+        LEFT JOIN storage_areas sa        ON sa.id = pr.storage_area_id
+        LEFT JOIN storage_areas ma        ON ma.location_id = pr.location_id AND ma.kind = 'main'
         WHERE pr.id = :id
     """), {'id': run_id}).mappings().fetchone()
     if not run:
@@ -168,6 +183,9 @@ def list_production_runs():
             if request.args.get('template_id'):
                 where.append('pr.template_id = :template_id')
                 params['template_id'] = request.args.get('template_id', type=int)
+            if request.args.get('storage_area_id'):
+                where.append(f'{AREA_EXPR} = :area_id')
+                params['area_id'] = request.args.get('storage_area_id', type=int)
             where_sql = ' AND '.join(where)
 
             total = conn.execute(text(f"""
@@ -176,6 +194,8 @@ def list_production_runs():
             rows = conn.execute(text(f"""
                 SELECT pr.id, pr.template_id, pt.name AS template_name,
                        pr.location_id, l.location_name,
+                       {AREA_EXPR} AS storage_area_id,
+                       (SELECT a.name FROM storage_areas a WHERE a.id = {AREA_EXPR}) AS storage_area_name,
                        pr.production_date, pr.status, pr.notes,
                        pr.created_by, pr.created_at, pr.submitted_by, pr.submitted_at,
                        (SELECT os.signer_name FROM operator_signoffs os
@@ -216,6 +236,7 @@ def list_production_runs():
 def create_production_run():
     """
     Start a run. Staff: their own commissary. Admins: pass location_id.
+    storage_area_id: the area the run is FOR (default Main).
     The template must be active and assigned to that commissary.
     production_date defaults to today (STORE_TIMEZONE).
     """
@@ -235,16 +256,20 @@ def create_production_run():
             """), {'tid': template_id, 'lid': location_id}).fetchone()
             if not assigned:
                 return jsonify({'error': 'That production template is not assigned to this commissary'}), 400
+            area = resolve_area(conn, location_id, data.get('storage_area_id'))
             row = conn.execute(text("""
                 INSERT INTO production_runs (template_id, location_id, production_date,
-                                             status, notes, created_by)
-                VALUES (:tid, :lid, CAST(:d AS date), 'draft', :notes, :by)
+                                             status, notes, created_by, storage_area_id)
+                VALUES (:tid, :lid, CAST(:d AS date), 'draft', :notes, :by, :area)
                 RETURNING id
             """), {'tid': template_id, 'lid': location_id, 'd': prod_date,
-                   'notes': data.get('notes'), 'by': g.user.get('email')}).fetchone()
+                   'notes': data.get('notes'), 'by': g.user.get('email'),
+                   'area': area['id'] if area else None}).fetchone()
         return jsonify({'id': row.id}), 201
     except CommissaryAccessError as e:
         return _access_response(e)
+    except AreaError as e:
+        return jsonify({'error': str(e)}), e.status
 
 
 # =============================================================================
@@ -369,7 +394,7 @@ def get_production_run(run_id):
                                       if mine else None)
 
             # What other submitted runs made today, per product (base units).
-            others = conn.execute(text("""
+            others = conn.execute(text(f"""
                 SELECT pri.product_id, pri.base_unit_id, bu.name AS base_unit,
                        SUM(pri.base_quantity) AS base_total, COUNT(DISTINCT pr.id) AS runs
                 FROM production_runs pr
@@ -377,8 +402,10 @@ def get_production_run(run_id):
                 LEFT JOIN units bu ON bu.id = pri.base_unit_id
                 WHERE pr.location_id = :lid AND pr.production_date = :d
                   AND pr.status = 'submitted' AND pr.id <> :id
+                  AND {AREA_EXPR} IS NOT DISTINCT FROM CAST(:area AS integer)
                 GROUP BY pri.product_id, pri.base_unit_id, bu.name
-            """), {'lid': run['location_id'], 'd': run['production_date'], 'id': run_id}).fetchall()
+            """), {'lid': run['location_id'], 'd': run['production_date'], 'id': run_id,
+                   'area': run['storage_area_id']}).fetchall()
 
             all_items = [it for s in sections for it in s['items']]
             pids  = {it['product_id'] for it in all_items}
@@ -817,12 +844,12 @@ def _create_run_inventory(conn, run, user):
     inv_id = conn.execute(text("""
         INSERT INTO inventory_submissions (
             template_id, location_id, count_date, source, status,
-            submitted_by, submitted_at, notes
+            submitted_by, submitted_at, notes, storage_area_id
         ) VALUES (
             NULL, :lid, CAST(:d AS date), 'production', :status,
-            :by, CASE WHEN :submitted THEN NOW() END, :notes
+            :by, CASE WHEN :submitted THEN NOW() END, :notes, :area
         ) RETURNING id
-    """), {'lid': run['location_id'], 'd': run['production_date'],
+    """), {'lid': run['location_id'], 'd': run['production_date'], 'area': run.get('storage_area_id'),
            'status': 'submitted' if submitted else 'draft', 'submitted': submitted,
            'by': user, 'notes': f'End inventory from production run #{run["id"]}'}).fetchone().id
     conn.execute(text("""
@@ -942,10 +969,12 @@ def production_daily():
     """
     date_from = request.args.get('date_from') or request.args.get('date') or _today_local()
     date_to   = request.args.get('date_to') or date_from
+    area_id   = request.args.get('storage_area_id', type=int)
+    area_sql  = f'AND {AREA_EXPR} = :area' if area_id else ''
     try:
         with get_engine().connect() as conn:
             location_id = resolve_commissary_location(conn, request.args.get('location_id'))
-            rows = conn.execute(text("""
+            rows = conn.execute(text(f"""
                 SELECT pr.production_date, pri.product_id, p.name AS product_name,
                        c.name AS category,
                        pri.base_unit_id, bu.name AS base_unit,
@@ -965,23 +994,25 @@ def production_daily():
                 LEFT JOIN units bu ON bu.id = pri.base_unit_id
                 WHERE pr.location_id = :lid AND pr.status = 'submitted'
                   AND pr.production_date BETWEEN CAST(:df AS date) AND CAST(:dt AS date)
+                  {area_sql}
                 GROUP BY pr.production_date, pri.product_id, p.name, c.name,
                          pri.base_unit_id, bu.name
                 HAVING SUM(pri.base_quantity) <> 0
                 ORDER BY pr.production_date DESC, c.name NULLS LAST, p.name
-            """), {'lid': location_id, 'df': date_from, 'dt': date_to}).mappings().all()
+            """), {'lid': location_id, 'df': date_from, 'dt': date_to, 'area': area_id}).mappings().all()
             unit_names = {r.id: r.name for r in conn.execute(text("""
                 SELECT id, name FROM units WHERE id = ANY(:ids)
             """), {'ids': list({r['unit_id'] for r in rows}) or [0]}).fetchall()}
-            run_counts = conn.execute(text("""
-                SELECT production_date,
-                       COUNT(*) FILTER (WHERE status = 'submitted') AS submitted,
-                       COUNT(*) FILTER (WHERE status = 'draft')     AS drafts
-                FROM production_runs
-                WHERE location_id = :lid
-                  AND production_date BETWEEN CAST(:df AS date) AND CAST(:dt AS date)
-                GROUP BY production_date
-            """), {'lid': location_id, 'df': date_from, 'dt': date_to}).mappings().all()
+            run_counts = conn.execute(text(f"""
+                SELECT pr.production_date,
+                       COUNT(*) FILTER (WHERE pr.status = 'submitted') AS submitted,
+                       COUNT(*) FILTER (WHERE pr.status = 'draft')     AS drafts
+                FROM production_runs pr
+                WHERE pr.location_id = :lid
+                  AND pr.production_date BETWEEN CAST(:df AS date) AND CAST(:dt AS date)
+                  {area_sql}
+                GROUP BY pr.production_date
+            """), {'lid': location_id, 'df': date_from, 'dt': date_to, 'area': area_id}).mappings().all()
 
         days = {}
         for rc in run_counts:

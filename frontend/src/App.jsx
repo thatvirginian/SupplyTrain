@@ -20,6 +20,8 @@ import CommissaryTemplateDetailPage from './features/commissary/pages/Commissary
 import ProductionHomePage           from './features/commissary/pages/ProductionHomePage.jsx'
 import ProductionRunPage            from './features/commissary/pages/ProductionRunPage.jsx'
 import ProductionPlanPage           from './features/commissary/pages/ProductionPlanPage.jsx'
+import CommissaryStockPage          from './features/commissary/pages/CommissaryStockPage.jsx'
+import StorageAreasPage             from './features/commissary/pages/StorageAreasPage.jsx'
 import OperatorsPage                from './features/operators/pages/OperatorsPage.jsx'
 import ProductionTemplateListPage   from './features/commissary/pages/ProductionTemplateListPage.jsx'
 import ProductionTemplateDetailPage from './features/commissary/pages/ProductionTemplateDetailPage.jsx'
@@ -160,7 +162,11 @@ function App() {
               <Route path="production"                element={<ProductionHomePage />} />
               <Route path="production/run/:runId"     element={<ProductionRunPage />} />
               <Route path="production-plan"           element={<ProductionPlanPage />} />
+              <Route path="commissary-stock"          element={<CommissaryStockPage />} />
             </>}
+            {isAdmin && (
+              <Route path="storage-areas"             element={<StorageAreasPage />} />
+            )}
             {(isAdmin || isCommGM) && <>
               <Route path="production-templates"      element={<ProductionTemplateListPage />} />
               <Route path="production-templates/:id"  element={<ProductionTemplateDetailPage />} />

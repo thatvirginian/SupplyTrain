@@ -217,7 +217,9 @@ export default function ProductionRunPage() {
           <div>
             <div className="sheet-title">{run.template_name || 'Production Run'}</div>
             <div className="sheet-meta">
-              {run.location_name} · {formatDate(run.production_date)}
+              {run.location_name}
+              {run.storage_area_name && <> · <span className="area-tag">{run.storage_area_name}</span></>}
+              {' · '}{formatDate(run.production_date)}
               {isSubmitted && <span className="sheet-submitted-badge">Submitted</span>}
             </div>
           </div>
@@ -257,7 +259,8 @@ export default function ProductionRunPage() {
       )}
 
       <div className="prod-end-note">
-        End Inv = what is on hand after production. It becomes {run.location_name}'s inventory
+        End Inv = what is on hand after production{run.storage_area_name ? ` in ${run.storage_area_name}` : ''}.
+        It becomes {run.storage_area_name ? `${run.storage_area_name}'s` : `${run.location_name}'s`} inventory
         for {formatDate(run.production_date)}{isSubmitted ? '' : ' when you submit'}; leave it blank for products not counted.
         {run.inventory_submission_id && (
           <> {' '}<a href={`/inventory/${run.inventory_submission_id}`}

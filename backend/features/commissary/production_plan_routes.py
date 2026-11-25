@@ -20,8 +20,12 @@
 #          change), summed over the store's orders that day.
 #   Totals per product: INV and ORD over all stores.
 #   Comm Inv  the commissary's own latest count BEFORE the plan date
-#             (inventory_counts, any source: a production run's End Inv or a
-#             commissary inventory), with the date it was counted.
+#             (any source: a production run's End Inv or a commissary
+#             inventory), with the date it was counted.
+#             Storage areas (storage_areas_plan.md decision 16): Comm Inv is
+#             the MAIN area by default; ?storage_area_ids=1,4 adds other areas
+#             of the same commissary. Each area's latest count before the date
+#             (inventory_area_counts), summed; each row lists the parts.
 #   What was made and the End Inv are entered on production runs, not here.
 #
 # Read only. Cancelled orders are left out. Any commissary order counts (there
@@ -31,7 +35,8 @@
 # Endpoints in this file:
 #   GET  /api/production-plan       production_plan
 #   GET  /api/production-plan/pdf   production_plan_pdf  (same plan as a PDF)
-#        params: template_id, date (default today), location_id (admins)
+#        params: template_id, date (default today), location_id (admins),
+#                storage_area_ids (comma separated; default Main)
 # =============================================================================
 
 from datetime import datetime
@@ -49,6 +54,7 @@ from features.commissary.commissary_access import (
     CommissaryAccessError, resolve_commissary_location,
 )
 from features.commissary.production_template_routes import load_production_template
+from features.commissary.storage_areas import list_areas
 
 bp = Blueprint('production_plan_routes', __name__, url_prefix='/api')
 
@@ -154,19 +160,46 @@ def _plan_from_request():
                 GROUP BY po.location_id, l.location_name, l.abbreviation, l.route
             """), {'d': plan_date, 'lid': location_id}).mappings().all()
 
-            # The commissary's latest count before the plan date, per product
-            comm_inv = {r.product_id: (_num(r.base_quantity), r.base_unit_id, str(r.count_date)) for r in conn.execute(text("""
-                SELECT DISTINCT ON (product_id) product_id, base_quantity, base_unit_id, count_date
-                FROM inventory_counts
-                WHERE location_id = :lid AND count_date < CAST(:d AS date)
-                  AND product_id = ANY(:pids) AND base_quantity IS NOT NULL
-                ORDER BY product_id, count_date DESC
-            """), {'lid': location_id, 'd': plan_date, 'pids': product_ids or [0]}).fetchall()}
+            # The commissary's latest count before the plan date, per product:
+            # comm_inv[product_id] = [(base_qty, base_unit_id, count_date, area_name or None)]
+            areas = list_areas(conn, location_id)
+            comm_areas = []
+            if areas:
+                wanted = set()
+                for x in (request.args.get('storage_area_ids') or '').split(','):
+                    try:
+                        wanted.add(int(x))
+                    except ValueError:
+                        pass
+                comm_areas = [a for a in areas if a['id'] in wanted] or [a for a in areas if a['kind'] == 'main']
+                comm_rows = conn.execute(text("""
+                    SELECT DISTINCT ON (c.storage_area_id, c.product_id)
+                           c.product_id, c.base_quantity, c.base_unit_id, c.count_date, a.name AS area_name
+                    FROM inventory_area_counts c
+                    JOIN storage_areas a ON a.id = c.storage_area_id
+                    WHERE c.storage_area_id = ANY(:aids) AND c.count_date < CAST(:d AS date)
+                      AND c.product_id = ANY(:pids) AND c.base_quantity IS NOT NULL
+                    ORDER BY c.storage_area_id, c.product_id, c.count_date DESC
+                """), {'aids': [a['id'] for a in comm_areas], 'd': plan_date,
+                       'pids': product_ids or [0]}).fetchall()
+            else:
+                comm_rows = conn.execute(text("""
+                    SELECT DISTINCT ON (product_id) product_id, base_quantity, base_unit_id, count_date,
+                           NULL AS area_name
+                    FROM inventory_counts
+                    WHERE location_id = :lid AND count_date < CAST(:d AS date)
+                      AND product_id = ANY(:pids) AND base_quantity IS NOT NULL
+                    ORDER BY product_id, count_date DESC
+                """), {'lid': location_id, 'd': plan_date, 'pids': product_ids or [0]}).fetchall()
+            comm_inv = {}
+            for r in comm_rows:
+                comm_inv.setdefault(r.product_id, []).append(
+                    (_num(r.base_quantity), r.base_unit_id, str(r.count_date), r.area_name))
 
             base_units = {i['product_id']: i['base_unit_id'] for i in items}
             unit_ids = ({i['unit_id'] for i in items}
                         | {r['order_unit_id'] for r in lines} | {r['on_hand_unit_id'] for r in lines}
-                        | {v[1] for v in comm_inv.values()})
+                        | {p[1] for v in comm_inv.values() for p in v})
             unit_ids.discard(None)
             conv = load_conversion_map(conn, product_ids, unit_ids,
                                        {b for b in base_units.values() if b})
@@ -233,11 +266,21 @@ def _plan_from_request():
                 if ord_ is not None:
                     tot_ord += ord_; any_ord = True
             comm_qty = comm_date = None
-            ci = comm_inv.get(i['product_id'])
-            if ci:
-                comm_date = ci[2]
-                comm_qty = shown(to_base(ci[0], ci[1], i['product_id']), i)
-                if comm_qty is None:
+            comm_parts = []
+            parts = comm_inv.get(i['product_id']) or []
+            if parts:
+                total, ok = 0.0, True
+                for qty, unit_id, cdate, area_name in parts:
+                    q = shown(to_base(qty, unit_id, i['product_id']), i)
+                    if q is None:
+                        ok = False
+                    else:
+                        total += q
+                    comm_parts.append({'area': area_name, 'quantity': q, 'date': cdate})
+                dates = {p[2] for p in parts}
+                comm_date = dates.pop() if len(dates) == 1 else None
+                comm_qty = round(total, 2) if ok else None
+                if not ok:
                     missing = True
             rows.append({
                 'product_id':   i['product_id'],
@@ -249,6 +292,7 @@ def _plan_from_request():
                 'total_ord':    round(tot_ord, 2) if any_ord else None,
                 'comm_inv':     comm_qty,
                 'comm_inv_date': comm_date,
+                'comm_inv_parts': comm_parts if len(comm_parts) > 1 or (comm_parts and comm_parts[0]['area']) else [],
                 'missing_conversion': missing,
             })
         sections.append({'id': s['id'], 'name': s['name'], 'items': rows})
@@ -256,6 +300,8 @@ def _plan_from_request():
     return {
         'location_id':   location_id,
         'location_name': location_name,
+        'areas':         [{'id': a['id'], 'name': a['name'], 'kind': a['kind']} for a in areas],
+        'comm_areas':    [{'id': a['id'], 'name': a['name']} for a in comm_areas],
         'date':          plan_date,
         'template_id':   template_id,
         'template_name': template['name'],

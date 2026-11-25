@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useAuth } from '../../../core/auth/AuthContext.js'
 import '../../../core/styles/shared-ui.css'
 import '../../../core/styles/count-entry-sheet.css'
+import { useStorageAreas, mainArea, AreaSelect } from '../../commissary/components/AreaPicker.jsx'
 
 export default function InventoryHomePage() {
   const navigate = useNavigate()
@@ -24,6 +25,11 @@ export default function InventoryHomePage() {
     new Date().toISOString().split('T')[0]
   )
   const [showForm, setShowForm] = useState(false)
+
+  // Storage areas (commissaries): the area this inventory counts, default Main
+  const areas = useStorageAreas(locationId, isAdmin)
+  const [areaId, setAreaId] = useState(null)
+  useEffect(() => { setAreaId(mainArea(areas)?.id ?? null) }, [areas])
 
   // Staff: their own location's templates and inventories.
   // Admins: pick a location first; templates and recent list follow it.
@@ -75,6 +81,7 @@ export default function InventoryHomePage() {
         template_id: parseInt(selectedTemplate),
         count_date:  countDate,
         ...(isAdmin ? { location_id: locationId } : {}),
+        ...(areaId ? { storage_area_id: areaId } : {}),
       })
       navigate(`/inventory/entry/${res.data.id}`)
     } catch (e) {
@@ -151,6 +158,12 @@ export default function InventoryHomePage() {
                   ))}
                 </select>
               </div>
+              {areas.length > 1 && (
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Area</label>
+                  <AreaSelect areas={areas} value={areaId} onChange={setAreaId} label="Area this inventory counts" />
+                </div>
+              )}
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Count Date</label>
                 <input className="input" type="date" value={countDate}
@@ -199,6 +212,7 @@ export default function InventoryHomePage() {
                     {isAdmin && <td style={{ color: 'var(--text-secondary)' }}>{s.location_name}</td>}
                     <td style={{ color: 'var(--text-secondary)' }}>
                       {s.template_name || (s.source === 'count_sheet' ? 'Count Sheet' : s.source === 'production' ? 'Production' : '—')}
+                      {areas.length > 1 && s.storage_area_name && <span className="prod-muted"> · {s.storage_area_name}</span>}
                     </td>
                     <td style={{ color: 'var(--text-muted)' }}>{s.item_count}</td>
                     <td>

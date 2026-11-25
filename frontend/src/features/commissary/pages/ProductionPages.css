@@ -372,3 +372,46 @@
   .prod-row .prod-qc-label { min-width: 160px; }
   .prod-row .prod-qc-boxes { grid-template-columns: repeat(4, 72px); }
 }
+
+/* ── Storage areas: multi-select (Production Plan Comm Inv) ──────────────────── */
+.area-multi { position: relative; display: inline-block; }
+.area-multi-btn { white-space: nowrap; }
+.area-multi-menu {
+  position:      absolute;
+  right:         0;
+  top:           calc(100% + 4px);
+  z-index:       30;
+  min-width:     200px;
+  background:    var(--bg-surface);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding:       0.35rem 0;
+  box-shadow:    0 6px 18px rgba(15, 23, 42, 0.12);
+}
+.area-multi-item {
+  display:     flex;
+  gap:         0.5rem;
+  align-items: center;
+  padding:     0.35rem 0.75rem;
+  font-size:   0.85rem;
+  cursor:      pointer;
+}
+.area-multi-item:hover { background: var(--bg-raised); }
+
+/* Area tag on runs / inventories */
+.area-tag {
+  display:        inline-block;
+  font-size:      0.65rem;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding:        0.1rem 0.4rem;
+  border-radius:  4px;
+  background:     var(--bg-raised);
+  color:          var(--text-secondary);
+  border:         1px solid var(--border-light);
+}
+
+/* Commissary Stock overview */
+.stock-cell-date { display: block; font-size: 0.62rem; color: var(--text-muted); font-family: var(--font-body); }
+.stock-total     { font-weight: 700; }

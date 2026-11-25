@@ -75,11 +75,15 @@ export default function Layout() {
             {!collapsed && <div className="nav-section-label">Commissary</div>}
             <NavItem to="/production"            label="Production"      icon="⚒" collapsed={collapsed} />
             <NavItem to="/production-plan"       label="Production Plan" icon="▤" collapsed={collapsed} />
+            <NavItem to="/commissary-stock"      label="Comm Stock"      icon="▥" collapsed={collapsed} />
             {(isAdmin || isCommGM) && (
               <NavItem to="/production-templates" label="Prod Templates" icon="⊠" collapsed={collapsed} />
             )}
             {isAdmin && (
               <NavItem to="/comm-order-templates" label="Comm Templates" icon="⊡" collapsed={collapsed} />
+            )}
+            {isAdmin && (
+              <NavItem to="/storage-areas"        label="Storage Areas"  icon="⌂" collapsed={collapsed} />
             )}
             {isCommissaryOnly && <>
               <NavItem to="/orders/history"  label="Order History"   icon="◷" collapsed={collapsed} />

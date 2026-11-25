@@ -5,6 +5,7 @@ import { useAuth } from '../../../core/auth/AuthContext.js'
 import { formatDate, formatTimestamp, todayLocal, parseLocalDate } from '../../../core/utils/dateUtils.js'
 import '../../../core/styles/shared-ui.css'
 import './ProductionPages.css'
+import { useStorageAreas, mainArea, AreaSelect } from '../components/AreaPicker.jsx'
 
 // Production (commissary): start a production run, and see what was made on a
 // day. A day's production = the sum of its SUBMITTED runs; drafts are listed
@@ -38,6 +39,9 @@ export default function ProductionHomePage() {
   const [error,     setError]     = useState(null)
   const [creating,  setCreating]  = useState(false)
   const [createError, setCreateError] = useState(null)
+  // Storage areas: the area a new run is FOR (default Main) and the area shown below (null = all)
+  const [runAreaId,  setRunAreaId]  = useState(null)
+  const [viewAreaId, setViewAreaId] = useState(null)
 
   // Commissaries this user can work on (staff: just their own).
   useEffect(() => {
@@ -61,13 +65,21 @@ export default function ProductionHomePage() {
   }, [locationId])
 
   const locParams = isAdmin ? { location_id: locationId } : {}
+  const areas = useStorageAreas(locationId, isAdmin)
+  const hasAreas = areas.length > 1
+  useEffect(() => {
+    setRunAreaId(mainArea(areas)?.id ?? null)
+    setViewAreaId(null)
+  }, [areas])
+  const areaName = (id) => areas.find(a => a.id === id)?.name
 
   const fetchDay = useCallback(async () => {
     if (!locationId) return
     setLoading(true)
     setError(null)
     try {
-      const params = isAdmin ? { location_id: locationId } : {}
+      const params = { ...(isAdmin ? { location_id: locationId } : {}),
+                       ...(viewAreaId ? { storage_area_id: viewAreaId } : {}) }
       const [tRes, dRes, rRes] = await Promise.all([
         axios.get('/api/production-templates', { params: { location_id: locationId } }),
         axios.get('/api/production-daily', { params: { ...params, date } }),
@@ -83,7 +95,7 @@ export default function ProductionHomePage() {
     } finally {
       setLoading(false)
     }
-  }, [locationId, date, isAdmin])
+  }, [locationId, date, isAdmin, viewAreaId])
 
   useEffect(() => { fetchDay() }, [fetchDay])
 
@@ -94,6 +106,7 @@ export default function ProductionHomePage() {
     try {
       const res = await axios.post('/api/production-runs', {
         template_id: parseInt(templateId), production_date: date, ...locParams,
+        ...(runAreaId ? { storage_area_id: runAreaId } : {}),
       })
       navigate(`/production/run/${res.data.id}`)
     } catch (e) {
@@ -141,6 +154,7 @@ export default function ProductionHomePage() {
           {date !== todayLocal() && (
             <button className="btn btn-secondary btn-sm" onClick={() => setDate(todayLocal())}>Today</button>
           )}
+          <AreaSelect areas={areas} value={viewAreaId} onChange={setViewAreaId} allowAll label="Show area" />
         </div>
       </div>
 
@@ -167,6 +181,12 @@ export default function ProductionHomePage() {
                   {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
+              {hasAreas && (
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">For area</label>
+                  <AreaSelect areas={areas} value={runAreaId} onChange={setRunAreaId} label="Area this run is for" />
+                </div>
+              )}
               <button className="btn btn-primary" onClick={handleStart}
                 disabled={creating || !templateId}>
                 {creating ? 'Starting...' : 'Start Run'}
@@ -179,7 +199,9 @@ export default function ProductionHomePage() {
       {/* Day totals */}
       <div className="card" style={{ marginBottom: '1.25rem' }}>
         <div className="card-header">
-          <h2 className="card-title">Made on {formatDate(date)}</h2>
+          <h2 className="card-title">
+            Made on {formatDate(date)}{viewAreaId ? ` · ${areaName(viewAreaId)}` : ''}
+          </h2>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
             {daily?.submitted_runs || 0} submitted {daily?.submitted_runs === 1 ? 'run' : 'runs'}
           </span>
@@ -249,6 +271,7 @@ export default function ProductionHomePage() {
               <thead>
                 <tr>
                   <th>Started</th>
+                  {hasAreas && <th>Area</th>}
                   <th>Template</th>
                   <th style={{ textAlign: 'right' }}>Made</th>
                   <th style={{ textAlign: 'right' }}>End Inv</th>
@@ -261,6 +284,7 @@ export default function ProductionHomePage() {
                 {runs.map(r => (
                   <tr key={r.id} className="row-link" onClick={() => navigate(`/production/run/${r.id}`)}>
                     <td>{formatTimestamp(r.created_at)}</td>
+                    {hasAreas && <td><span className="area-tag">{r.storage_area_name || '—'}</span></td>}
                     <td style={{ color: 'var(--text-secondary)' }}>{r.template_name || '—'}</td>
                     <td className="prod-num">{r.item_count}</td>
                     <td className="prod-num">{r.end_count}</td>

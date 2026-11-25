@@ -193,6 +193,7 @@ export default function InventoryDetailPage() {
                 {isFromCountSheet ? 'Count Sheet' : inventory.source === 'production' ? 'Production' : 'Manual'}
               </span>
               {inventory.template_name && ` · ${inventory.template_name}`}
+              {inventory.storage_area_name && ` · ${inventory.storage_area_name}`}
             </p>
           </div>
         </div>

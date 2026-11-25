@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { AreaMultiSelect } from '../components/AreaPicker.jsx'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { useAuth } from '../../../core/auth/AuthContext.js'
@@ -58,6 +59,8 @@ export default function ProductionPlanPage() {
   const [plan,    setPlan]    = useState(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
+  // Comm Inv areas (storage areas): Main by default, more can be added; remembered per commissary
+  const [areaIds, setAreaIds] = useState([])
 
   useEffect(() => {
     axios.get('/api/commissary-locations')
@@ -91,13 +94,28 @@ export default function ProductionPlanPage() {
     try { localStorage.setItem('production-plan-template', templateId) } catch { /* private mode */ }
   }, [templateId])
 
+  useEffect(() => {
+    if (!locationId) return
+    try {
+      const saved = JSON.parse(localStorage.getItem(`production-plan-areas:${locationId}`) || '[]')
+      setAreaIds(Array.isArray(saved) ? saved : [])
+    } catch { setAreaIds([]) }
+  }, [locationId])
+
+  const changeAreas = (ids) => {
+    setAreaIds(ids)
+    try { localStorage.setItem(`production-plan-areas:${locationId}`, JSON.stringify(ids)) } catch { /* private mode */ }
+  }
+  const areaParam = areaIds.length ? { storage_area_ids: areaIds.join(',') } : {}
+
   const fetchPlan = useCallback(async () => {
     if (!locationId || !templateId) { setPlan(null); return }
     setLoading(true)
     setError(null)
     try {
       const res = await axios.get('/api/production-plan', {
-        params: { template_id: templateId, date, ...(isAdmin ? { location_id: locationId } : {}) },
+        params: { template_id: templateId, date, ...(isAdmin ? { location_id: locationId } : {}),
+                  ...(areaIds.length ? { storage_area_ids: areaIds.join(',') } : {}) },
       })
       setPlan(res.data)
     } catch (e) {
@@ -106,7 +124,7 @@ export default function ProductionPlanPage() {
     } finally {
       setLoading(false)
     }
-  }, [locationId, templateId, date, isAdmin])
+  }, [locationId, templateId, date, isAdmin, areaIds])
 
   useEffect(() => { fetchPlan() }, [fetchPlan])
 
@@ -167,10 +185,12 @@ export default function ProductionPlanPage() {
           {date !== todayLocal() && (
             <button className="btn btn-secondary btn-sm" onClick={() => setDate(todayLocal())}>Today</button>
           )}
+          <AreaMultiSelect label="Comm Inv" areas={plan?.areas || []}
+            value={areaIds.length ? areaIds : (plan?.comm_areas || []).map(a => a.id)} onChange={changeAreas} />
           <button className="btn btn-secondary btn-sm" disabled={!plan}
             onClick={() => {
               const q = new URLSearchParams({ template_id: templateId, date,
-                ...(isAdmin ? { location_id: locationId } : {}) })
+                ...(isAdmin ? { location_id: locationId } : {}), ...areaParam })
               window.open(`/api/production-plan/pdf?${q}`, '_blank')
             }}>
             Print PDF
@@ -230,6 +250,9 @@ export default function ProductionPlanPage() {
                   <th className="plan-store">Total</th>
                   <th className="prod-num plan-comm" title="The commissary's latest count before this day">
                     Comm Inv
+                    {(plan.areas || []).length > 1 && (
+                      <span className="plan-comm-date">{(plan.comm_areas || []).map(a => a.name).join(' + ')}</span>
+                    )}
                     {commDate && <span className="plan-comm-date">{shortDate(commDate)}</span>}
                   </th>
                 </tr>
@@ -244,7 +267,8 @@ export default function ProductionPlanPage() {
           </div>
           <div className="plan-foot">
             INV is what the store counted on its order sheet and ORD what it ordered, both shown in the
-            template's unit. Comm Inv is the commissary's latest count before this day.
+            template's unit. Comm Inv is the commissary's latest count before this day
+            {(plan.areas || []).length > 1 && <> in {(plan.comm_areas || []).map(a => a.name).join(' + ')}</>}.
           </div>
         </div>
       )}
@@ -277,7 +301,10 @@ function SectionRows({ sec, stores, showName, commDate }) {
           return <SplitCell key={s.location_id} inv={c?.inv} ord={c?.ord} />
         })}
         <SplitCell inv={i.total_inv} ord={i.total_ord} total />
-        <td className="prod-num plan-comm">
+        <td className="prod-num plan-comm"
+          title={(i.comm_inv_parts || []).length
+            ? i.comm_inv_parts.map(p => `${p.area}: ${p.quantity ?? '?'} (${p.date})`).join(' · ')
+            : undefined}>
           {fmt(i.comm_inv)}
           {i.comm_inv_date && i.comm_inv_date !== commDate && (
             <span className="plan-comm-date">{shortDate(i.comm_inv_date)}</span>
