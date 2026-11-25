@@ -44,6 +44,10 @@
 # force when its weights were first saved. Changing weights on a submitted run is
 # a correction (signed), like Made and End Inv.
 #
+# MADE BY: each product row can carry a name, TYPED by whoever fills in the sheet
+# (like the names next to each product on the paper sheet): who made it, and so
+# who weighed its QC bags. No PIN, no Toast link (production_run_made_by).
+#
 # Signing (core/operators.py): submitting a run and correcting a submitted run
 # are signed by the person signed in on the device (or the personal login).
 # On a shared login with nobody signed in they answer 428 operator_required.
@@ -413,6 +417,23 @@ def get_production_run(run_id):
                     spec = specs.get(it['product_id'])
                     it['qc_spec']  = spec if spec and spec['enabled'] else None
                     it['qc_check'] = checks.get(it['product_id'])
+            # Made by (typed names) + names used before at this commissary, as suggestions
+            made_by = {r.product_id: r.made_by for r in conn.execute(text("""
+                SELECT product_id, made_by FROM production_run_made_by WHERE run_id = :id
+            """), {'id': run_id}).fetchall()}
+            for s in sections:
+                for it in s['items']:
+                    it['made_by'] = made_by.get(it['product_id'])
+            run['made_by_suggestions'] = [r.made_by for r in conn.execute(text("""
+                SELECT m.made_by, COUNT(*) AS n, MAX(m.updated_at) AS last_used
+                FROM production_run_made_by m
+                JOIN production_runs pr ON pr.id = m.run_id
+                WHERE pr.location_id = :lid AND m.updated_at >= NOW() - INTERVAL '120 days'
+                GROUP BY m.made_by
+                ORDER BY COUNT(*) DESC, MAX(m.updated_at) DESC
+                LIMIT 60
+            """), {'lid': run['location_id']}).fetchall()]
+
             run['qc_samples'] = QC_SAMPLES
             run['qc_flags'] = sum(1 for c in checks.values() if c['result'] in ('low', 'high'))
 
@@ -444,7 +465,7 @@ def get_production_run(run_id):
 @comm_required
 def save_production_run(run_id):
     """
-    Body: {entries: [{product_id, quantity, end_quantity, qc_weights}], correction_notes?}
+    Body: {entries: [{product_id, quantity, end_quantity, qc_weights, made_by}], correction_notes?}
     One entry per product row on the sheet.
 
     quantity (Made), blank = null / '':
@@ -453,6 +474,8 @@ def save_production_run(run_id):
     end_quantity (End Inv), only when the key is sent; blank = not counted
       (the inventory line is removed, also on a submitted run).
 
+    made_by, only when the key is sent: the name as typed (trimmed, spaces
+      squeezed, up to 80 characters); blank removes it.
     qc_weights (QC), only when the key is sent: up to QC_SAMPLES scale readings;
       blanks are skipped, all blank removes the check. Needs QC set up on the
       product (unless the run already has weights for it).
@@ -495,7 +518,7 @@ def save_production_run(run_id):
             out.append(w)
         return out or None
 
-    made, ends, qcw = {}, {}, {}
+    made, ends, qcw, mby = {}, {}, {}, {}
     try:
         for e in entries:
             try:
@@ -508,6 +531,11 @@ def save_production_run(run_id):
                 ends[pid] = parse_qty(e.get('end_quantity'))
             if 'qc_weights' in e:
                 qcw[pid] = parse_weights(e.get('qc_weights'))
+            if 'made_by' in e:
+                name = ' '.join(str(e.get('made_by') or '').split())
+                if len(name) > 80:
+                    raise ValueError('Made by names can be up to 80 characters')
+                mby[pid] = name or None
     except ValueError as err:
         return jsonify({'error': str(err)}), 400
 
@@ -545,14 +573,15 @@ def save_production_run(run_id):
 
             # The unit of each product row on the sheet (same rule as GET).
             unit_for = {}
-            for pid in set(made) | set(ends) | set(qcw):
+            for pid in set(made) | set(ends) | set(qcw) | set(mby):
                 if pid in existing:
                     unit_for[pid] = existing[pid].unit_id
                 elif pid in template_units:
                     unit_for[pid] = template_units[pid]
                 elif pid in end_units:
                     unit_for[pid] = end_units[pid]
-                elif made.get(pid) is not None or ends.get(pid) is not None or qcw.get(pid):
+                elif (made.get(pid) is not None or ends.get(pid) is not None
+                      or qcw.get(pid) or mby.get(pid)):
                     return jsonify({'error': f'Product {pid} is not on this production template'}), 400
 
             pids  = set(unit_for)
@@ -648,10 +677,26 @@ def save_production_run(run_id):
                     avg, result = evaluate(ws, snap['target_weight'], snap['tolerance'])
                     qc_write.append(dict(snap, pid=pid, weights=ws, avg=avg, result=result))
 
+            # ── Made by (typed names) ──────────────────────────────────────────
+            mb_write, mb_remove = [], []
+            if mby:
+                cur_mb = {r.product_id: r.made_by for r in conn.execute(text("""
+                    SELECT product_id, made_by FROM production_run_made_by WHERE run_id = :id
+                """), {'id': run_id}).fetchall()}
+                for pid, name in mby.items():
+                    if pid not in unit_for:
+                        continue
+                    if name is None:
+                        if pid in cur_mb:
+                            mb_remove.append(pid)
+                    elif cur_mb.get(pid) != name:
+                        mb_write.append({'pid': pid, 'name': name})
+
             # A change to a SUBMITTED run is a correction: it is signed (who changed it).
             who = user
             signer = None
-            if submitted and (writes or removes or end_write or end_remove or qc_write or qc_remove):
+            if submitted and (writes or removes or end_write or end_remove or qc_write or qc_remove
+                              or mb_write or mb_remove):
                 signer = signer_for(conn, run['location_id'])
                 who = signer['name']
 
@@ -710,6 +755,19 @@ def save_production_run(run_id):
                     UPDATE inventory_submissions SET updated_at = NOW() WHERE id = :id
                 """), {'id': inv_id})
 
+            # ── Write Made by ──────────────────────────────────────────────────
+            if mb_remove:
+                conn.execute(text("""
+                    DELETE FROM production_run_made_by WHERE run_id = :id AND product_id = ANY(:pids)
+                """), {'id': run_id, 'pids': mb_remove})
+            for m in mb_write:
+                conn.execute(text("""
+                    INSERT INTO production_run_made_by (run_id, product_id, made_by, entered_by, updated_at)
+                    VALUES (:id, :pid, :name, :who, NOW())
+                    ON CONFLICT (run_id, product_id) DO UPDATE SET
+                        made_by = EXCLUDED.made_by, entered_by = EXCLUDED.entered_by, updated_at = NOW()
+                """), dict(m, id=run_id, who=who))
+
             # ── Write QC weights ───────────────────────────────────────────────
             if qc_remove:
                 conn.execute(text("""
@@ -741,7 +799,7 @@ def save_production_run(run_id):
             """), {'id': run_id})
         return jsonify({'status': 'ok',
                         'changed': len(writes) + len(removes) + len(end_write) + len(end_remove)
-                                   + len(qc_write) + len(qc_remove)})
+                                   + len(qc_write) + len(qc_remove) + len(mb_write) + len(mb_remove)})
     except OperatorRequired:
         return operator_required_response()
     except CommissaryAccessError as e:
@@ -896,9 +954,12 @@ def production_daily():
                        COUNT(DISTINCT pri.unit_id) AS unit_count,
                        MIN(pri.unit_id) AS unit_id,
                        SUM(pri.quantity) AS quantity_total,
-                       BOOL_OR(pri.corrected_at IS NOT NULL) AS corrected
+                       BOOL_OR(pri.corrected_at IS NOT NULL) AS corrected,
+                       STRING_AGG(DISTINCT mb.made_by, ', ') AS made_by
                 FROM production_runs pr
                 JOIN production_run_items pri ON pri.run_id = pr.id
+                LEFT JOIN production_run_made_by mb
+                       ON mb.run_id = pr.id AND mb.product_id = pri.product_id
                 JOIN products p ON p.id = pri.product_id
                 LEFT JOIN product_categories c ON c.id = p.category_id
                 LEFT JOIN units bu ON bu.id = pri.base_unit_id
@@ -942,6 +1003,7 @@ def production_daily():
                 'base_unit':    r['base_unit'],
                 'runs':         r['runs'],
                 'corrected':    bool(r['corrected']),
+                'made_by':      r['made_by'],
             })
         return jsonify({
             'location_id': location_id,

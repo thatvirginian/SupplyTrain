@@ -205,6 +205,7 @@ export default function ProductionHomePage() {
                   <th style={{ textAlign: 'right' }}>Made</th>
                   <th style={{ textAlign: 'right' }}>Base</th>
                   <th style={{ textAlign: 'right' }}>Runs</th>
+                  <th>Made by</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,6 +225,7 @@ export default function ProductionHomePage() {
                       {fmtQty(p.base_quantity)} {p.base_unit}
                     </td>
                     <td className="prod-num">{p.runs}</td>
+                    <td style={{ color: 'var(--text-secondary)' }}>{p.made_by || <span className="prod-muted">—</span>}</td>
                   </tr>
                 ))}
               </tbody>

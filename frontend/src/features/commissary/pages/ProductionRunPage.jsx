@@ -48,6 +48,7 @@ export default function ProductionRunPage() {
   const [entries,    setEntries]    = useState({})     // Made:    { product_id: '2.5' }
   const [endEntries, setEndEntries] = useState({})     // End Inv: { product_id: '12' }
   const [qcEntries,  setQcEntries]  = useState({})     // QC:      { product_id: ['4.4', '', '', ''] }
+  const [madeBy,     setMadeBy]     = useState({})     // Made by: { product_id: 'Yazmin' } (typed)
   const [dirty,      setDirty]      = useState(false)
   const [notes,      setNotes]      = useState('')     // correction reason
   const [saving,     setSaving]     = useState(false)
@@ -61,11 +62,12 @@ export default function ProductionRunPage() {
     try {
       const res = await axios.get(`/api/production-runs/${runId}`)
       setRun(res.data)
-      const e = {}, end = {}, qc = {}
+      const e = {}, end = {}, qc = {}, mb = {}
       const n = res.data.qc_samples || 4
       res.data.lines.forEach(l => { e[l.product_id] = String(l.quantity) })
       res.data.sections.forEach(s => s.items.forEach(it => {
         if (it.end_quantity != null) end[it.product_id] = String(it.end_quantity)
+        if (it.made_by) mb[it.product_id] = it.made_by
         if (it.qc_spec || it.qc_check) {
           const w = (it.qc_check?.weights || []).map(String)
           qc[it.product_id] = [...w, ...Array(Math.max(0, n - w.length)).fill('')]
@@ -74,6 +76,7 @@ export default function ProductionRunPage() {
       setEntries(e)
       setEndEntries(end)
       setQcEntries(qc)
+      setMadeBy(mb)
       setDirty(false)
     } catch (e) {
       setError(e.response?.data?.error || 'Could not load the production run.')
@@ -93,6 +96,11 @@ export default function ProductionRunPage() {
 
   const handleEndChange = (productId, value) => {
     setEndEntries(prev => ({ ...prev, [productId]: value }))
+    setDirty(true)
+  }
+
+  const handleMadeByChange = (productId, value) => {
+    setMadeBy(prev => ({ ...prev, [productId]: value }))
     setDirty(true)
   }
 
@@ -120,6 +128,7 @@ export default function ProductionRunPage() {
             product_id:   it.product_id,
             quantity:     v === undefined || v === '' ? null : v,
             end_quantity: ev === undefined || ev === '' ? null : ev,
+            made_by:      (madeBy[it.product_id] || '').trim() || null,
           }
           // QC weights only for products weighed for QC (or already weighed on this run)
           if (qcEntries[it.product_id]) {
@@ -273,6 +282,10 @@ export default function ProductionRunPage() {
       )}
 
       <div className="sheet-body">
+        {/* Names typed on earlier runs at this commissary, offered while typing "Made by" */}
+        <datalist id="made-by-names">
+          {(run.made_by_suggestions || []).map(n => <option key={n} value={n} />)}
+        </datalist>
         {run.sections.length === 0 && (
           <div className="alert alert-warning">This production template has no products yet.</div>
         )}
@@ -347,6 +360,19 @@ export default function ProductionRunPage() {
                             onChange={e => handleEndChange(it.product_id, e.target.value)}
                           />
                         </div>
+                      </div>
+                      <div className="prod-made-by">
+                        <label className="sheet-count-label" htmlFor={`mb-${it.product_id}`}>Made by</label>
+                        <input id={`mb-${it.product_id}`}
+                          className="input prod-made-by-input"
+                          list="made-by-names"
+                          placeholder="Name"
+                          maxLength={80}
+                          autoComplete="off"
+                          value={madeBy[it.product_id] ?? ''}
+                          disabled={readOnly}
+                          onChange={e => handleMadeByChange(it.product_id, e.target.value)}
+                        />
                       </div>
                       {it.end_other?.length > 0 && (
                         <div className="prod-end-other">

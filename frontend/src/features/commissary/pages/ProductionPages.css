@@ -251,3 +251,19 @@
 }
 
 .prod-qc-result .badge { font-family: var(--font-body); margin-left: 0.25rem; }
+
+/* Run sheet: "Made by" (typed name per product) */
+.prod-made-by {
+  display:     grid;
+  grid-template-columns: 70px 1fr;
+  gap:         0.5rem;
+  align-items: center;
+  padding:     0.35rem 0 0.1rem;
+}
+
+.prod-made-by .sheet-count-label { margin: 0; }
+
+.input.prod-made-by-input {
+  padding:   0.35rem 0.55rem;
+  font-size: 0.9rem;
+}
